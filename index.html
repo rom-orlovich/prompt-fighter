@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PROMPT FIGHTER</title>
+    <meta
+      name="description"
+      content="Two LLMs walk into an arena. The argument is the fight."
+    />
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+
+    <div id="hud" class="hud">
+      <div class="topbar">
+        <div class="side left">
+          <div class="nameplate">
+            <span class="name" id="p1-name">CLAUDE</span>
+            <span class="tag" id="p1-tag">nuance specialist</span>
+          </div>
+          <div class="bar">
+            <div class="chip" id="p1-chip"></div>
+            <div class="fill" id="p1-fill"></div>
+          </div>
+          <div class="meter"><div class="meter-fill" id="p1-meter"></div></div>
+          <div class="pips" id="p1-pips"></div>
+        </div>
+
+        <div class="center">
+          <div class="timer" id="timer">99</div>
+          <div class="round" id="round-label">ROUND 1</div>
+        </div>
+
+        <div class="side right">
+          <div class="nameplate">
+            <span class="name" id="p2-name">CODEX</span>
+            <span class="tag" id="p2-tag">ships with confidence</span>
+          </div>
+          <div class="bar">
+            <div class="chip" id="p2-chip"></div>
+            <div class="fill" id="p2-fill"></div>
+          </div>
+          <div class="meter"><div class="meter-fill" id="p2-meter"></div></div>
+          <div class="pips" id="p2-pips"></div>
+        </div>
+      </div>
+
+      <div class="combo left" id="p1-combo"></div>
+      <div class="combo right" id="p2-combo"></div>
+
+      <div class="announcer" id="announcer"></div>
+      <div class="fx-layer" id="fx-layer"></div>
+
+      <div class="bottom">
+        <div class="subtitle" id="subtitle">
+          <span class="who" id="sub-who"></span>
+          <span class="text" id="sub-text"></span>
+        </div>
+
+        <div class="actions" id="actions">
+          <div class="action-window"><div class="action-window-fill" id="action-window"></div></div>
+          <div class="action-row">
+            <button class="action" data-action="FACT_STRIKE">
+              <kbd>1</kbd><b>FACT STRIKE</b><i>evidence · high crit · beats hedging</i>
+            </button>
+            <button class="action" data-action="UNDERCUT">
+              <kbd>2</kbd><b>UNDERCUT</b><i>counter · punishes long answers</i>
+            </button>
+            <button class="action" data-action="PIVOT">
+              <kbd>3</kbd><b>PIVOT</b><i>evade · breaks their combo</i>
+            </button>
+            <button class="action" data-action="GUARD">
+              <kbd>4</kbd><b>GUARD</b><i>mitigate · builds super meter</i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="title" class="overlay">
+      <h1>PROMPT<span>FIGHTER</span></h1>
+      <p class="sub">Two LLMs walk into an arena. The argument <em>is</em> the fight.</p>
+      <div class="stages" id="stage-picker"></div>
+      <p class="hint">
+        You are the corner coach. While the other model is typing, pick the stance your
+        fighter answers with — keys <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd> or click.
+      </p>
+    </div>
+
+    <div id="result" class="overlay hidden">
+      <h2 id="result-title">K.O.</h2>
+      <p id="result-sub"></p>
+      <button id="rematch">REMATCH</button>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

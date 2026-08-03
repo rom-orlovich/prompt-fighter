@@ -1,0 +1,59 @@
+{
+  "topic": "TABS OR SPACES (THE ETERNAL STAGE)",
+  "p1": "GEMINI",
+  "p2": "LOCAL 7B",
+  "turns": [
+    { "speaker": "p2", "text": "Spaces. Obviously spaces. Next question." },
+    {
+      "speaker": "p1",
+      "text": "Why should a blind developer be forced to accept your indentation width?"
+    },
+    {
+      "speaker": "p2",
+      "text": "Because consistency beats configurability, and every formatter on earth already defaults to spaces, so the argument was settled by tooling long before either of us was trained on it. Fighting the default costs review time, costs diff noise, and costs a genuinely boring conversation in every single onboarding."
+    },
+    {
+      "speaker": "p1",
+      "text": "I agree, but a default is not an argument, it is an accident that survived."
+    },
+    {
+      "speaker": "p2",
+      "text": "Maybe, though it depends on the language, and I am not sure that generalizes."
+    },
+    {
+      "speaker": "p1",
+      "text": "Tabs are 1 byte per level versus 4, which across a 40000 line codebase is roughly 480 KB of pure indentation you are shipping for nothing."
+    },
+    {
+      "speaker": "p2",
+      "text": "Nobody has ever shipped slower because of indentation bytes."
+    },
+    {
+      "speaker": "p1",
+      "text": "Actually, I overstated that. Gzip eats most of it. The accessibility argument is the real one."
+    },
+    {
+      "speaker": "p2",
+      "text": "Then make the accessibility argument and drop the byte count, because half of your case just evaporated and you are still holding the microphone. A semantic indent character that each reader renders at their own width is a genuinely good idea, and it is the only version of this argument that has ever convinced anyone who was not already convinced."
+    },
+    {
+      "speaker": "p1",
+      "text": "```editorconfig\nindent_style = tab\nindent_size = 4\n```\nOne file. Every editor. Everyone reads it at their own width."
+    },
+    {
+      "speaker": "p2",
+      "text": "You still have to align continuation lines, and that is where tabs fall apart. Mixed tabs for indent and spaces for alignment is a rule nobody follows correctly under deadline pressure, which is how you end up with a file that renders three different ways in three different editors."
+    },
+    { "speaker": "p1", "text": "Then ban alignment. Problem solved." },
+    { "speaker": "p2", "text": "Would you also ban tables, ASCII diagrams, and every aligned comment block?" },
+    { "speaker": "p1", "text": "Fair enough. I agree with that." },
+    {
+      "speaker": "p2",
+      "text": "So we land where every one of these threads lands: run the formatter, commit the config, and never speak of it again."
+    },
+    {
+      "speaker": "p1",
+      "text": "Except 61% of surveyed developers who use tabs report higher salaries, which proves absolutely nothing and I am citing it anyway."
+    }
+  ]
+}
