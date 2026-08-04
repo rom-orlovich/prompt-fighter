@@ -1,9 +1,15 @@
 /**
- * A fighter is a real KayKit character model with a floating terminal-text
- * billboard hovering above its head.
+ * A fighter is a real, realistically-proportioned character model with a
+ * floating terminal-text billboard hovering above its head.
  *
- * The model loads asynchronously through `GLTFLoader` and is driven by an
- * `AnimationMixer` against the pack's baked clips (see `POSE_CLIPS`), but
+ * Three vendored assets combine into one fighter, all sharing a single skeleton
+ * (Quaternius, CC0): a **body** mesh, a **hairstyle** rigged to that same
+ * skeleton, and a shared **clip library** — the bodies ship with no animations
+ * of their own. Clips and hair bind to the body's bones by NAME, which is why
+ * the vendored library has to be the Unreal-named export.
+ *
+ * All three load asynchronously through `GLTFLoader` and are driven by an
+ * `AnimationMixer` (see `POSE_CLIPS`), but
  * `createFighter()` itself stays synchronous: it returns a fully-formed
  * `FighterRig` immediately, and the loaded geometry/animations simply appear
  * inside `group` once the fetch resolves. Callers (`main.ts`, `select.ts`)
@@ -18,7 +24,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { FighterProfile } from '../fighters';
-import { characterFor, characterAssetUrl } from '../roster/characters';
+import { characterFor, characterAssetUrl, ANIMATION_ASSET } from '../roster/characters';
 
 export type PoseName = 'idle' | 'windup' | 'attack' | 'guard' | 'hurt' | 'ko' | 'win';
 
@@ -42,25 +48,40 @@ export interface FighterRig {
  * as taking a beating.
  */
 const POSE_CLIPS: Record<PoseName, readonly string[]> = {
-  // Held on its last frame, so the neutral pose IS the guard-up boxing stance
-  // rather than a relaxed stand — `Idle_Loop` is kept vendored as the fallback.
-  idle: ['Punch_Enter'],
-  // `windup` fires at the start of every turn, so it is on screen more than any
-  // other pose. It re-asserts the same fists-up stance, just tenser (see
-  // POSE_TIME_SCALE) — an earlier pass used the rig's crouch here and it read as
-  // the fighter squatting down rather than loading up a punch.
-  windup: ['Punch_Enter'],
+  // A combat-ready stance that actually loops, so a fighter waiting out a long
+  // turn still breathes instead of standing frozen.
+  idle: ['Sword_Idle'],
   attack: ['Punch_Jab', 'Punch_Cross'],
-  // The crouch survives here: slipping under a punch is a real block, and unlike
-  // windup this only fires on an actual blocked hit, so it stays brief.
-  guard: ['Crouch_Idle_Loop'],
+  // `windup` fires at the start of every turn, so it is on screen more than any
+  // other pose. It freezes `Punch_Jab` partway in (see POSE_FREEZE) to hold a
+  // real fists-up boxing guard — an earlier pass used the rig's crouch here and
+  // it read as the fighter squatting rather than loading up a punch.
+  windup: ['Punch_Jab'],
+  // A block is fists up covering the face, so `guard` holds the same jab frame
+  // as `windup`, just a little deeper into the wind. The rig's crouch was tried
+  // here first and read as the fighter squatting rather than covering up.
+  guard: ['Punch_Jab'],
   hurt: ['Hit_Head', 'Hit_Chest'],
   ko: ['Death01'],
   win: ['Dance_Loop']
 };
 
 /** Poses that hold their final frame instead of looping. */
-const CLAMP_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'idle', 'attack', 'hurt']);
+const CLAMP_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'attack', 'hurt']);
+
+/**
+ * Poses held at a fraction of their clip instead of played through.
+ *
+ * The Unreal-named animation library (the only export whose bone names match
+ * these bodies) has no dedicated fighting-stance clip. `Punch_Jab` passes
+ * through a textbook guard — fists up at face level — about a fifth of the way
+ * in, so `windup` plays to there and pauses. Picked by rendering the clip at
+ * several fractions and looking at them, not by guessing.
+ */
+const POSE_FREEZE: Partial<Record<PoseName, number>> = {
+  windup: 0.18,
+  guard: 0.24
+};
 
 /**
  * Per-pose crossfade, in seconds. A punch has to snap or it reads as a shove;
@@ -77,13 +98,9 @@ const POSE_BLEND: Record<PoseName, number> = {
   win: 0.3
 };
 
-/**
- * Per-pose playback rate. `idle` and `windup` share `Punch_Enter` — the rig has
- * no separate "load up" clip — so tempo is what separates them: settling into
- * the guard reads slower than snapping back into it before a strike.
- */
+/** Per-pose playback rate. */
 const POSE_TIME_SCALE: Record<PoseName, number> = {
-  idle: 0.85,
+  idle: 0.8,
   windup: 1.4,
   attack: 1.15,
   guard: 0.7,
@@ -117,6 +134,9 @@ const BILLBOARD_HEAD_OFFSET = 0.5;
 /** Base emissive glow applied to every tinted material before charge/flash heat it up. */
 const BASE_EMISSIVE_INTENSITY = 0.3;
 
+/** Hair reads as hair, not as brand paint — it stays dark on every fighter. */
+const HAIR_COLOR = 0x23232b;
+
 function hex(color: number): string {
   return `#${color.toString(16).padStart(6, '0')}`;
 }
@@ -136,7 +156,7 @@ function wrap(text: string, charsPerLine: number): string[] {
   return lines;
 }
 
-/** Finds the rig's `head` joint — every vendored KayKit model names it exactly `head`. */
+/** Finds the rig's head joint — the vendored bodies name it exactly `Head`. */
 function findHeadBone(root: THREE.Object3D): THREE.Object3D | null {
   let exact: THREE.Object3D | null = null;
   let partial: THREE.Object3D | null = null;
@@ -152,10 +172,9 @@ function findHeadBone(root: THREE.Object3D): THREE.Object3D | null {
 /**
  * Finds the rig's striking hand, used to anchor the punch trail.
  *
- * Matched by suffix rather than equality: the vendored rig names its bones
- * `DEF-hand.R` / `DEF-hand.L`, so an exact-name test silently falls through to
- * the first bone merely *containing* "hand" — which is the LEFT one, and the
- * punches are thrown with the right.
+ * Matched by suffix rather than equality, and right-hand-first: the bones are
+ * named `hand_r` / `hand_l`, and a test that merely *contains* "hand" picks the
+ * left one (it traverses first) while the punches are thrown with the right.
  */
 function findHandBone(root: THREE.Object3D): THREE.Object3D | null {
   let right: THREE.Object3D | null = null;
@@ -187,9 +206,10 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
   const group = new THREE.Group();
   group.position.set(baseX, 0, 0);
-  // Height from `modelScale`, build from `bulk` — all four fighters share one
-  // mesh now, so width/depth is what keeps a heavyweight from reading exactly
-  // like a featherweight. The sprite below divides `modelScale` back out.
+  // Height from `modelScale`, build from `bulk` — the free asset tier ships two
+  // bodies for four fighters, so width/depth is part of what keeps a heavyweight
+  // from reading exactly like a featherweight. The sprite below divides
+  // `modelScale` back out.
   group.scale.set(
     character.modelScale * character.bulk,
     character.modelScale,
@@ -233,6 +253,9 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let trailPrimed = false;
 
   let pendingPose: PoseName = 'idle';
+  /** Action pinned to a held frame (see POSE_FREEZE), and the frame it holds. */
+  let frozenAction: THREE.AnimationAction | null = null;
+  let frozenTime = 0;
   /** Rotates through each pose's clip list so repeats alternate instead of repeating. */
   const variantCursor = new Map<PoseName, number>();
 
@@ -252,11 +275,13 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     if (!clipName) return;
     const nextAction = actions.get(clipName);
     if (!nextAction) return; // this rig doesn't have the clip — keep whatever is playing
+    const freeze = POSE_FREEZE[pose];
     const clamp = CLAMP_POSES.has(pose);
     nextAction.reset();
-    nextAction.setLoop(clamp ? THREE.LoopOnce : THREE.LoopRepeat, Infinity);
-    nextAction.clampWhenFinished = clamp;
+    nextAction.setLoop(clamp || freeze !== undefined ? THREE.LoopOnce : THREE.LoopRepeat, Infinity);
+    nextAction.clampWhenFinished = clamp || freeze !== undefined;
     nextAction.timeScale = POSE_TIME_SCALE[pose];
+    nextAction.paused = false;
     nextAction.play();
     if (currentAction && currentAction !== nextAction) {
       currentAction.crossFadeTo(nextAction, POSE_BLEND[pose], false);
@@ -266,30 +291,47 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       nextAction.fadeIn(POSE_BLEND[pose]);
     }
     currentAction = nextAction;
+    // A frozen pose seeks to its held frame and stops there. `update` still runs
+    // the mixer so the crossfade into this pose completes.
+    if (freeze !== undefined) {
+      frozenAction = nextAction;
+      frozenTime = nextAction.getClip().duration * freeze;
+    } else {
+      frozenAction = null;
+    }
   }
 
+  /** Tints one loaded mesh into this fighter's brand hue and registers its materials. */
+  function tint(mesh: THREE.Mesh, color: number, emissive: boolean): void {
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const cloned = materials.map((material) => {
+      const clone = (material as THREE.MeshStandardMaterial).clone();
+      clone.color.setHex(color);
+      // The packed bodies ship untextured (the vendor step strips the atlas), so
+      // a leftover map would just multiply the tint toward black.
+      clone.map = null;
+      if ('emissive' in clone && emissive) {
+        (clone as THREE.MeshStandardMaterial).emissive.setHex(color);
+        (clone as THREE.MeshStandardMaterial).emissiveIntensity = BASE_EMISSIVE_INTENSITY;
+        tintedMaterials.push(clone as THREE.MeshStandardMaterial);
+      }
+      return clone;
+    });
+    mesh.material = Array.isArray(mesh.material) ? cloned : cloned[0];
+  }
+
+  const base = import.meta.env.BASE_URL;
+
+  // Body first: it owns the skeleton that both the clips and the hair bind to.
   gltfLoader.load(
-    characterAssetUrl(character.model, import.meta.env.BASE_URL),
+    characterAssetUrl(character.body, base),
     (gltf) => {
       const scene = gltf.scene;
-
       scene.traverse((obj) => {
         const mesh = obj as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        const cloned = materials.map((material) => {
-          const clone = (material as THREE.MeshStandardMaterial).clone();
-          clone.color.setHex(character.skin);
-          if ('emissive' in clone) {
-            (clone as THREE.MeshStandardMaterial).emissive.setHex(character.skin);
-            (clone as THREE.MeshStandardMaterial).emissiveIntensity = BASE_EMISSIVE_INTENSITY;
-          }
-          tintedMaterials.push(clone as THREE.MeshStandardMaterial);
-          return clone;
-        });
-        mesh.material = Array.isArray(mesh.material) ? cloned : cloned[0];
+        if (mesh.isMesh) tint(mesh, character.skin, true);
       });
 
       model.add(scene);
@@ -297,9 +339,55 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       handBone = findHandBone(scene);
 
       mixer = new THREE.AnimationMixer(scene);
-      for (const clip of gltf.animations) {
-        actions.set(clip.name, mixer.clipAction(clip));
-      }
+
+      // Clips live in their own file — the bodies ship with zero animations —
+      // and bind by bone NAME, which is why the vendored library has to be the
+      // Unreal-named export that shares this skeleton.
+      gltfLoader.load(
+        characterAssetUrl(ANIMATION_ASSET, base),
+        (animGltf) => {
+          if (!mixer) return;
+          for (const clip of animGltf.animations) {
+            actions.set(clip.name, mixer.clipAction(clip));
+          }
+          applyPose(pendingPose);
+        },
+        undefined,
+        () => {
+          // No clips: the fighter still renders, just without animation.
+        }
+      );
+
+      // Hair is a separate skinned mesh authored against the same skeleton.
+      // Rebind it onto THIS body's bones by name rather than parenting the raw
+      // geometry to the head bone — that leaves it floating in bind space.
+      const bodyBones = new Map<string, THREE.Bone>();
+      scene.traverse((obj) => {
+        const bone = obj as THREE.Bone;
+        if (bone.isBone) bodyBones.set(bone.name, bone);
+      });
+
+      gltfLoader.load(
+        characterAssetUrl(character.hair, base),
+        (hairGltf) => {
+          let hairMesh: THREE.SkinnedMesh | null = null;
+          hairGltf.scene.traverse((obj) => {
+            const skinned = obj as THREE.SkinnedMesh;
+            if (skinned.isSkinnedMesh && !hairMesh) hairMesh = skinned;
+          });
+          if (!hairMesh) return;
+          const skinned = hairMesh as THREE.SkinnedMesh;
+          const bones = skinned.skeleton.bones.map((bone) => bodyBones.get(bone.name) ?? bone);
+          tint(skinned, HAIR_COLOR, false);
+          skinned.bind(new THREE.Skeleton(bones, skinned.skeleton.boneInverses), skinned.bindMatrix);
+          scene.add(skinned);
+        },
+        undefined,
+        () => {
+          // No hair: the fighter is simply bald, which is not worth failing over.
+        }
+      );
+
       applyPose(pendingPose);
     },
     undefined,
@@ -421,6 +509,12 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
     update(dt, _elapsed) {
       if (mixer) mixer.update(dt);
+      // Pin a frozen pose to its held frame every tick: the mixer keeps running
+      // so the crossfade into it finishes, but the clip itself never advances.
+      if (frozenAction) {
+        frozenAction.time = frozenTime;
+        frozenAction.paused = true;
+      }
 
       // Punch trail: follow the fist while the strike is hot, then fade.
       if (handBone && trailStrength > 0) {

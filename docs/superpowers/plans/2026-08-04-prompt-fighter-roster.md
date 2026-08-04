@@ -152,9 +152,32 @@ movements... make it look as real as possible and like a fighting game."
       of the generic spark burst.
 - [x] Re-record the demo and verify frame by frame.
 
-Deferred: per-fighter *bodies*. Quaternius's Universal Base Characters would restore four
-distinct silhouettes on the same skeleton, but its free tier is 2 of 8 bodies behind a 122MB
-interactive download plus a cross-file mesh/skeleton pairing step.
+### 5. Per-fighter bodies (shipped)
+
+Rom, after seeing four fighters share one mesh: "download the base characters and make 4
+different bodies."
+
+- [x] Download Quaternius's Universal Base Characters (CC0) and the Unreal-Godot export of
+      the Universal Animation Library from itch.io, and vendor bodies, hairstyles and clips
+      as separate GLBs.
+- [x] Verify the packs share one skeleton before building on them — **66 of 67 bone names
+      match**, so clips drive the bodies and hair rebinds by name with no retargeting.
+      The Godot-named mirror used previously shares exactly ONE bone name and would animate
+      nothing; `tests/vendored-assets.test.ts` now asserts >90% overlap to prevent that
+      regression.
+- [x] Give each fighter its own body + hairstyle combination (2 bodies x 4 hairstyles),
+      layered on the existing per-fighter height, build and brand tint.
+- [x] Rebind each hairstyle's SkinnedMesh onto its body's skeleton by bone name — parenting
+      the raw geometry to the head bone leaves it floating in bind space (it rendered in
+      the sky on the first attempt).
+- [x] Rebuild the pose map for the Unreal-named clip set, which has no `Punch_Enter`: add
+      `POSE_FREEZE` so `windup` and `guard` hold `Punch_Jab` partway in as a real fists-up
+      boxing guard, and loop `Sword_Idle` for a living idle.
+- [x] Re-record the demo and screenshot the select screen to verify all four fighters read
+      apart.
+
+Deferred: four *wholly* different bodies. The pack's free tier ships 2 of its 8 base
+bodies; the remaining six are in the paid Source tier.
 
 ---
 

@@ -93,53 +93,71 @@ licensing question the original design was protecting against.
 
 ### Source
 
-**Quaternius Universal Animation Library** — a free, **CC0-licensed** (public domain, no
-attribution required) realistically-proportioned humanoid shipped together with 46 clips
-on its own skeleton. Vendored from the glTF mirror at
-`https://github.com/J-Ponzo/gltf-universal-animation-library`
-(upstream: `https://quaternius.itch.io/universal-animation-library`). CC0 is the same
-license class the 2026-08-03 spec's "asset policy is scoped, not asset-free" note already
-anticipated: no proprietary assets, no attribution-required assets, nothing that reopens a
-licensing question for a public MIT-licensed repo.
+Three **CC0-licensed** Quaternius packs (public domain, no attribution required), all
+sharing ONE Unreal-style skeleton — which is the entire reason the combination works:
 
-#### Why this replaced KayKit Adventurers
+| Pack | Provides | Note |
+|---|---|---|
+| [Universal Base Characters](https://quaternius.itch.io/universal-base-characters) | the bodies | realistically proportioned (~7 heads), muscular, **zero animations** |
+| [Universal Animation Library](https://quaternius.itch.io/universal-animation-library) | the clips | includes a real boxing vocabulary |
+| Base pack's hairstyles | per-fighter heads | rigged to the same skeleton's head bone |
 
-The roster first shipped on **KayKit Adventurers** (also CC0, also cleanly rigged, four
-genuinely distinct characters). It was replaced because it lost the brief: KayKit's
-adventurers are chibi fantasy characters — roughly three heads tall, in wizard hats and
-knight helmets — and the game is meant to read as a grounded fistfight. Rendering both
-packs side by side at matched arena height made it unarguable.
+66 of 67 bone names match between the bodies and the animation library, so the clips drive
+the bodies directly and the hair rebinds onto the body skeleton by name. No retargeting
+math — which is the step that usually turns a swap like this into twisted limbs.
 
-The swap buys two things and costs one:
+> **The animation library must be the `Unreal-Godot` export (`UAL1_Standard.glb`).** The
+> Godot-only glTF mirror circulating on GitHub uses Blender/Rigify bone names (`DEF-head`,
+> `DEF-f_index.03.L`) and shares exactly **one** bone name with the bodies — its clips bind
+> to nothing and silently animate nothing at all. `tests/vendored-assets.test.ts` asserts a
+> >90% bone-name overlap specifically to stop that export being re-vendored.
 
-- **Proportions.** ~7 heads instead of ~3, no fantasy silhouette.
-- **A real boxing vocabulary.** KayKit offered one generic `Unarmed_Melee_Attack_Punch_A`.
-  This rig has `Punch_Enter` (raise the guard), `Punch_Jab`, `Punch_Cross`, and two
-  separate hit reactions (`Hit_Head`, `Hit_Chest`) — enough to alternate strikes and
-  flinches instead of replaying one frame.
-- **Cost: per-fighter character identity.** KayKit gave four *different characters*; this
-  is one mesh worn by all four. Distinctness now comes from brand tint, `modelScale` and
-  `bulk` (see the table below) — a heavyweight still reads apart from a featherweight, but
-  they are no longer different characters.
+CC0 is the same license class the 2026-08-03 spec's "asset policy is scoped, not
+asset-free" note already anticipated: no proprietary assets, no attribution-required
+assets, nothing that reopens a licensing question for a public MIT-licensed repo.
 
-The obvious way to buy that identity back is Quaternius's *Universal Base Characters* pack
-(same skeleton, so the clips retarget for free), whose free tier ships 2 of its 8 base
-bodies. It was not taken here: it sits behind a 122MB interactive download and would add a
-cross-file mesh/skeleton pairing step, which is exactly the class of change that breaks
-quietly. Worth revisiting if per-fighter bodies become the priority.
+Both packs are name-your-own-price downloads behind itch.io's interactive flow, so
+`scripts/vendor-characters.mjs` does not fetch them automatically — it takes `--base` and
+`--anims` paths to the two extracted folders.
+
+#### How the roster got here
+
+The roster first shipped on **KayKit Adventurers** (also CC0, cleanly rigged, four
+genuinely distinct characters). It lost the brief: KayKit's adventurers are chibi fantasy
+characters — roughly three heads tall, in wizard hats and knight helmets — and the game is
+meant to read as a grounded fistfight. Rendering both packs side by side at matched arena
+height made it unarguable.
+
+The first replacement used the animation library's own built-in mannequin: realistic
+proportions and real punches, but **one mesh worn by all four fighters**, so per-fighter
+identity collapsed into tint and scale.
+
+Adding the base-character pack closes that gap. Its free tier ships 2 of the 8 bodies
+(Superhero Male and Female) plus hairstyles, so identity is now the **combination**:
+
+| Fighter | Body | Hair | Build |
+|---|---|---|---|
+| `CLAUDE` | Male | parted | lean, deliberate counter-puncher |
+| `CODEX` | Male | bearded | front-foot brawler |
+| `GEMINI` | Male | shaven | hulking heavyweight |
+| `LOCAL 7B` | Female | long | compact featherweight |
+
+Two bodies × four distinct hairstyles × per-fighter height, build and brand tint. That is
+short of four wholly different characters — the pack's paid tier has eight bodies — but the
+select screen now shows four fighters nobody would mistake for each other.
 
 ### Fighter → build
 
-All four fighters wear the same rig (natural height 1.83 world units), so the spec's job is
-no longer picking a model — it is making one mesh read as four contenders. Each gets its
-own brand tint, its own `modelScale` (height) and its own `bulk` (width/depth):
+On top of body and hair, each fighter gets its own `modelScale` (height) and `bulk`
+(width/depth). The two bodies are not the same height on their own — Male 1.82, Female
+1.78 — so `modelHeight(spec)` reads from the body and `arenaHeight(spec)` is their product:
 
-| Fighter | Build | `modelScale` | `bulk` | Arena height |
+| Fighter | Body | `modelScale` | `bulk` | Arena height |
 |---|---|---|---|---|
-| `CLAUDE` | lean, deliberate counter-puncher | 1.78 | 0.97 | 3.26 |
-| `CODEX` | front-foot brawler, commits to every swing | 1.86 | 1.10 | 3.40 |
-| `GEMINI` | hulking heavyweight, overwhelming reach | 2.00 | 1.15 | 3.66 |
-| `LOCAL 7B` | compact featherweight, fast hands | 1.61 | 0.90 | 2.95 |
+| `CLAUDE` | Male (1.82) | 1.79 | 0.97 | 3.26 |
+| `CODEX` | Male (1.82) | 1.87 | 1.10 | 3.40 |
+| `GEMINI` | Male (1.82) | 2.00 | 1.15 | 3.64 |
+| `LOCAL 7B` | Female (1.78) | 1.66 | 0.90 | 2.95 |
 
 `bulk` is deliberately mild (0.9–1.15). A skinned humanoid stretched much past that stops
 reading as heavyset and starts reading as broken, so the range is asserted in
@@ -167,10 +185,10 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
 
   | Pose | Clip(s) | Notes |
   |---|---|---|
-  | `idle` | `Punch_Enter` | LoopOnce + clamped, so the neutral pose *is* the guard-up stance |
-  | `windup` | `Punch_Enter` | same clip, `timeScale` 1.4 — snapping back into guard, not settling |
+  | `idle` | `Sword_Idle` | a combat-ready stance that **loops**, so a fighter waiting out a long turn still breathes |
+  | `windup` | `Punch_Jab` frozen at 0.18 | held partway in — a textbook fists-up guard |
   | `attack` | `Punch_Jab` → `Punch_Cross` | alternates, so a long exchange isn't one frame replayed |
-  | `guard` | `Crouch_Idle_Loop` | slipping under a punch; only fires on an actual block |
+  | `guard` | `Punch_Jab` frozen at 0.24 | a block is fists up covering the face, so it holds the same jab a little deeper |
   | `hurt` | `Hit_Head` → `Hit_Chest` | alternates — a fighter that always flinches identically reads as a puppet |
   | `ko` | `Death01` | LoopOnce + clamped, holds the last frame |
   | `win` | `Dance_Loop` | |
@@ -179,9 +197,17 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
   0.06s or it reads as a shove, while settling back to guard takes 0.22s. A single shared
   blend time was the main reason the first pass felt floaty.
 
-  An earlier pass mapped `windup` to the rig's crouch. Because `windup` fires at the start
-  of *every* turn it is the most-visible pose in the match, and it read as the fighter
-  squatting rather than loading up — hence the crouch being demoted to `guard` only.
+  **On frozen poses.** The Unreal-named library — the only export whose bone names match
+  these bodies — has no dedicated fighting-stance clip. `Punch_Jab` passes through a
+  textbook guard about a fifth of the way in, so `windup` and `guard` seek to a fraction of
+  it and pause (`POSE_FREEZE`), pinned every tick while the mixer keeps running so the
+  crossfade into them still completes. The fractions were chosen by rendering the clip at
+  several points and looking at them.
+
+  Both poses previously used the rig's crouch. `windup` fires at the start of *every* turn,
+  making it the most-visible pose in the match, and it read as the fighter squatting rather
+  than loading up; `guard` read as ducking rather than blocking. Hence both moved to the
+  held jab.
 - Brand color is applied via **material tinting**, not geometry or texture swap: the stock
   materials are cloned per fighter and recolored to the brand hue with an emissive rim, the
   same way the procedural rig's `color`/`accent`/`trim` fields worked. One shared mesh
@@ -233,10 +259,15 @@ size-only check passes on a corrupt model.
 validate → write), refuses to emit a rig that fails validation or keeps the wrong clips,
 and fails outright if the payload would exceed the 5MB budget.
 
-The result is one self-contained `public/assets/characters/Fighter.glb`: **3.23MB packed →
-1.10MB vendored (−66%)**, 10 clips, shared by all four fighters. For comparison the
-four-model KayKit roster it replaced cost 2.49MB, so the realism upgrade also more than
-halved the payload.
+The result under `public/assets/characters/`:
+
+| Asset | Size | Note |
+|---|---|---|
+| `Male.glb` | 0.74MB | body, no clips |
+| `Female.glb` | 1.01MB | body, no clips |
+| `Hair_SimpleParted / Beard / Buzzed / Long` | 0.38MB total | one per fighter |
+| `Anims.glb` | 7.62MB → 2.20MB | 43 clips trimmed to 10, shared by every body |
+| **Total** | **4.33MB** | budget 6MB |
 
 This keeps the "clone stays small" property of the original procedural design intact even
 though the geometry is no longer procedural.

@@ -1,48 +1,67 @@
 /**
  * Per-fighter character spec.
  *
- * A `CharacterSpec` is pure data: no Three.js, no DOM. Every fighter now wears
- * the *same* realistically-proportioned humanoid rig (Quaternius, CC0) — the
- * roster's earlier KayKit models were four visibly different characters, but
- * they were chibi fantasy adventurers, which read nothing like a fistfight.
+ * A `CharacterSpec` is pure data: no Three.js, no DOM. Each fighter is a
+ * combination of a vendored body mesh, a hairstyle rigged to the same skeleton,
+ * a brand tint, a height and a build — every part CC0 (Quaternius).
  *
- * Sharing one rig means silhouette variety has to come from somewhere else, so
- * each fighter gets its own brand tint, its own `modelScale` (height) and its
- * own `bulk` (width/depth). A hulking GEMINI and a compact LOCAL 7B still read
- * apart at a glance, they are just no longer different *characters*.
+ * The free tier of the base-character pack ships two bodies, so identity comes
+ * from the combination rather than from four separate meshes: two bodies × four
+ * distinct hairstyles × per-fighter height/build/tint. That is a real step up
+ * from the previous single shared mesh, and short of four wholly different
+ * characters (the pack's paid tier has eight bodies).
  *
  * Kept dependency-free so it can be unit-tested under plain Node/Vitest with no
  * browser, exactly like `src/roster/visuals.ts`.
  */
 
-/** The single vendored fighter rig. Every roster entry uses it. */
-export type CharacterModelId = 'Fighter';
+/** Vendored body meshes. */
+export type BodyId = 'Male' | 'Female';
 
-export const CHARACTER_MODEL: CharacterModelId = 'Fighter';
+/** Vendored hairstyles, rigged to the shared skeleton's head bone. */
+export type HairId = 'Hair_SimpleParted' | 'Hair_Beard' | 'Hair_Buzzed' | 'Hair_Long';
 
-/** Natural height of the vendored rig, measured from its bounding box in the guard stance. */
-export const RIG_NATURAL_HEIGHT = 1.83;
+export const BODIES: readonly BodyId[] = ['Male', 'Female'];
+export const HAIRSTYLES: readonly HairId[] = [
+  'Hair_SimpleParted',
+  'Hair_Beard',
+  'Hair_Buzzed',
+  'Hair_Long'
+];
+
+/** The shared clip library every body is animated by. */
+export const ANIMATION_ASSET = 'Anims';
+
+/** Natural heights of the vendored bodies, measured from their bounding boxes. */
+const BODY_HEIGHT: Record<BodyId, number> = {
+  Male: 1.82,
+  Female: 1.78
+};
 
 export interface CharacterSpec {
   /** Display name, mirrors the roster key. */
   name: string;
-  /** Vendored rig this fighter wears — currently always `Fighter`. */
-  model: CharacterModelId;
+  /** Vendored body mesh this fighter wears. */
+  body: BodyId;
+  /** Vendored hairstyle — unique per fighter, the main silhouette cue at the head. */
+  hair: HairId;
   /** One-line description — must be unique per fighter. */
   description: string;
-  /** Skin tint applied to the rig — MUST equal `ROSTER[name].color`. */
+  /** Skin tint applied to the body — MUST equal `ROSTER[name].color`. */
   skin: number;
-  /** The rig's own height in world units, before scaling. */
-  modelHeight: number;
   /** Uniform height scale, so `arenaHeight` lands in the band the camera frames. */
   modelScale: number;
   /**
-   * Width/depth multiplier layered on top of `modelScale`. This is the only
-   * knob that separates a stocky fighter from a lean one now that all four
-   * share a mesh — kept mild (0.9-1.15) because a skinned humanoid stretched
-   * much past that starts to read as broken rather than heavyset.
+   * Width/depth multiplier layered on top of `modelScale`. Kept mild
+   * (0.9-1.15) — a skinned humanoid stretched much past that reads as broken
+   * rather than heavyset.
    */
   bulk: number;
+}
+
+/** The body's own height in world units, before scaling. */
+export function modelHeight(spec: CharacterSpec): number {
+  return BODY_HEIGHT[spec.body];
 }
 
 /**
@@ -51,54 +70,54 @@ export interface CharacterSpec {
  * range — a pass at double it cropped every fighter at the waist on screen.
  */
 export function arenaHeight(spec: CharacterSpec): number {
-  return spec.modelHeight * spec.modelScale;
+  return modelHeight(spec) * spec.modelScale;
 }
 
 export const CHARACTERS: Record<string, CharacterSpec> = {
   CLAUDE: {
     name: 'CLAUDE',
-    model: 'Fighter',
+    body: 'Male',
+    hair: 'Hair_SimpleParted',
     description: 'a measured counter-puncher, lean and deliberate',
     skin: 0xd97757,
-    modelHeight: RIG_NATURAL_HEIGHT,
-    modelScale: 1.78,
+    modelScale: 1.79,
     bulk: 0.97
   },
   CODEX: {
     name: 'CODEX',
-    model: 'Fighter',
-    description: 'a front-foot brawler that commits to every swing',
+    body: 'Male',
+    hair: 'Hair_Beard',
+    description: 'a bearded front-foot brawler that commits to every swing',
     skin: 0x10a37f,
-    modelHeight: RIG_NATURAL_HEIGHT,
-    modelScale: 1.86,
+    modelScale: 1.87,
     bulk: 1.1
   },
   GEMINI: {
     name: 'GEMINI',
-    model: 'Fighter',
-    description: 'a hulking heavyweight that overwhelms with sheer reach',
+    body: 'Male',
+    hair: 'Hair_Buzzed',
+    description: 'a shaven-headed heavyweight that overwhelms with sheer reach',
     skin: 0x4285f4,
-    modelHeight: RIG_NATURAL_HEIGHT,
     modelScale: 2.0,
     bulk: 1.15
   },
   'LOCAL 7B': {
     name: 'LOCAL 7B',
-    model: 'Fighter',
+    body: 'Female',
+    hair: 'Hair_Long',
     description: 'a compact featherweight — fast hands, shallow reads',
     skin: 0xa855f7,
-    modelHeight: RIG_NATURAL_HEIGHT,
-    modelScale: 1.61,
+    modelScale: 1.66,
     bulk: 0.9
   }
 };
 
 const FALLBACK_CHARACTER: Omit<CharacterSpec, 'name'> = {
-  model: 'Fighter',
+  body: 'Male',
+  hair: 'Hair_Buzzed',
   description: 'an unlabeled contender, plain and unknown',
   skin: 0x8899aa,
-  modelHeight: RIG_NATURAL_HEIGHT,
-  modelScale: 1.8,
+  modelScale: 1.82,
   bulk: 1
 };
 
@@ -110,10 +129,12 @@ export function characterFor(name: string): CharacterSpec {
 
 /** A short deterministic string that is unique per distinct spec — used only by tests. */
 export function characterSignature(spec: CharacterSpec): string {
-  return [spec.name, spec.model, spec.description, spec.skin, spec.modelScale, spec.bulk].join('|');
+  return [spec.name, spec.body, spec.hair, spec.description, spec.skin, spec.modelScale, spec.bulk].join(
+    '|'
+  );
 }
 
-/** Resolves a vendored model id to its local, same-origin `.glb` path under the app base. */
-export function characterAssetUrl(model: CharacterModelId, base = '/'): string {
-  return `${base}assets/characters/${model}.glb`;
+/** Resolves a vendored asset id to its local, same-origin `.glb` path under the app base. */
+export function characterAssetUrl(asset: string, base = '/'): string {
+  return `${base}assets/characters/${asset}.glb`;
 }
