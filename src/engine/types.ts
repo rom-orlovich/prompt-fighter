@@ -57,6 +57,8 @@ export interface FighterState {
   meter: number;
   combo: number;
   roundsWon: number;
+  /** Absorbs incoming damage before credibility, granted by per-fighter abilities. */
+  shield: number;
 }
 
 export interface MatchState {
@@ -77,6 +79,20 @@ export type CombatEvent =
   | { type: 'comboBreak'; by: Speaker }
   | { type: 'meter'; who: Speaker; value: number }
   | { type: 'super'; by: Speaker; name: string; damage: number }
+  | {
+      type: 'ability';
+      by: Speaker;
+      /** Ability id, e.g. "SHIP_IT_RUSH" — kept as a plain string so this file never
+       * imports from abilities.ts (that would create an import cycle). */
+      ability: string;
+      /** Human-facing ability name, e.g. "SHIP IT RUSH". */
+      name: string;
+      /** The fighter name that owns this ability, e.g. "CODEX". */
+      owner: string;
+      /** What the ability did this trigger — "damage" | "heal" | "meter" | "shield" | "drain" | "selfDamage" | "comboReset". */
+      effect: string;
+      amount: number;
+    }
   | { type: 'ko'; loser: Speaker }
   | { type: 'roundEnd'; winner: Speaker | null; round: number }
   | { type: 'matchEnd'; winner: Speaker }

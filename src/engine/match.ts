@@ -94,6 +94,7 @@ export class FightEngine {
     for (const side of ['p1', 'p2'] as const) {
       this.state[side].credibility = MAX_CREDIBILITY;
       this.state[side].combo = 0;
+      this.state[side].shield = 0;
     }
     this.lastText = { p1: undefined, p2: undefined };
     return events;

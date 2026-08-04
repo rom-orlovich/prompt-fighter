@@ -13,6 +13,8 @@
 
 import * as THREE from 'three';
 import type { FighterProfile } from '../fighters';
+import type { FighterPart, GeometrySpec } from './fighter-plan';
+import { buildFighterPlan } from './fighter-plan';
 
 export type PoseName = 'idle' | 'windup' | 'attack' | 'guard' | 'hurt' | 'ko' | 'win';
 
@@ -36,11 +38,6 @@ const POSES: Record<PoseName, Pose> = {
   win:    { forward: 0,    crouch: -0.1, lean: 0.06,  punch: 0, guardUp: 0.95, recoil: 0, fallen: 0 }
 };
 
-const SCREEN_W = 640;
-const SCREEN_H = 400;
-const MAX_LINES = 6;
-const CHARS_PER_LINE = 30;
-
 /** Angle that squares a fighter's screen to the fixed camera. */
 const CAMERA_YAW = 0.3;
 
@@ -58,11 +55,11 @@ function hex(color: number): string {
   return `#${color.toString(16).padStart(6, '0')}`;
 }
 
-function wrap(text: string): string[] {
+function wrap(text: string, charsPerLine: number): string[] {
   const lines: string[] = [];
   let line = '';
   for (const word of text.split(/\s+/)) {
-    if ((line + ' ' + word).trim().length > CHARS_PER_LINE) {
+    if ((line + ' ' + word).trim().length > charsPerLine) {
       if (line) lines.push(line);
       line = word;
     } else {
@@ -84,27 +81,77 @@ function connect(limb: THREE.Mesh, from: THREE.Vector3, to: THREE.Vector3): void
   limb.scale.z = Math.max(length, 0.001);
 }
 
+/** Build a Three.js geometry from a pure `GeometrySpec` (see `fighter-plan.ts`). */
+function geometryFor(spec: GeometrySpec): THREE.BufferGeometry {
+  switch (spec.kind) {
+    case 'box':
+      return new THREE.BoxGeometry(spec.size[0], spec.size[1], spec.size[2] ?? spec.size[1]);
+    case 'sphere':
+      return new THREE.SphereGeometry(spec.size[0], 20, 16);
+    case 'octahedron':
+      return new THREE.OctahedronGeometry(spec.size[0], 0);
+    case 'torus':
+      return new THREE.TorusGeometry(spec.size[0], spec.size[1], 12, 28);
+    case 'plane':
+      return new THREE.PlaneGeometry(spec.size[0], spec.size[1]);
+  }
+}
+
 export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig {
   // `inward` points from this fighter toward the opponent.
   const inward = -side;
   const baseX = side * 2.55;
+  const visual = profile.visual;
+
+  // The pure geometry plan (roster/visuals.ts -> render/fighter-plan.ts) is the only
+  // place fighter shape/size/material numbers come from — this function just turns
+  // each named part into a real Three.js mesh.
+  const plan = buildFighterPlan(visual);
+  const partsByName = new Map(plan.map((p) => [p.name, p]));
+  function part(name: string): FighterPart {
+    const found = partsByName.get(name);
+    if (!found) throw new Error(`fighter plan missing part: ${name}`);
+    return found;
+  }
 
   const group = new THREE.Group();
   group.position.set(baseX, 0, 0);
+  group.scale.setScalar(visual.scale);
 
   const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: profile.color,
-    emissive: profile.color,
+    color: visual.color,
+    emissive: visual.color,
     emissiveIntensity: 0.22,
     roughness: 0.4,
     metalness: 0.6
   });
   const limbMaterial = new THREE.MeshStandardMaterial({
     color: 0x121a2b,
-    emissive: profile.accent,
+    emissive: visual.accent,
     emissiveIntensity: 0.45,
     roughness: 0.3,
     metalness: 0.75
+  });
+  const fistMaterial = new THREE.MeshStandardMaterial({
+    color: visual.accent,
+    emissive: visual.accent,
+    emissiveIntensity: 0.8,
+    roughness: 0.25,
+    metalness: 0.5
+  });
+  const bezelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x080d16,
+    emissive: visual.accent,
+    emissiveIntensity: 0.3,
+    roughness: 0.45,
+    metalness: 0.7
+  });
+  const headMaterial = new THREE.MeshStandardMaterial({
+    color: visual.trim,
+    emissive: visual.trim,
+    emissiveIntensity: 0.35,
+    roughness: 0.35,
+    metalness: 0.65
   });
 
   // Body twists into a 3/4 stance so the silhouette reads as a fighter, not a box.
@@ -112,46 +159,39 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   body.rotation.y = inward * 0.7;
   group.add(body);
 
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.78, 1.3, 1.05), bodyMaterial);
+  const torso = new THREE.Mesh(geometryFor(part('torso').geometry), bodyMaterial);
   torso.position.y = 1.5;
   torso.castShadow = true;
   body.add(torso);
 
-  const shoulders = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.34, 1.32), limbMaterial);
+  const shoulders = new THREE.Mesh(geometryFor(part('shoulders').geometry), limbMaterial);
   shoulders.position.y = 2.05;
   shoulders.castShadow = true;
   body.add(shoulders);
 
-  const hips = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.46, 0.98), limbMaterial);
-  hips.position.y = 0.82;
+  const hips = new THREE.Mesh(geometryFor(part('hips').geometry), limbMaterial);
+  hips.position.y = part('hips').position[1];
   hips.castShadow = true;
   body.add(hips);
 
-  const fistMaterial = new THREE.MeshStandardMaterial({
-    color: profile.accent,
-    emissive: profile.accent,
-    emissiveIntensity: 0.8,
-    roughness: 0.25,
-    metalness: 0.5
-  });
-  const fistLead = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.52, 0.52), fistMaterial);
-  const fistRear = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.44, 0.44), fistMaterial);
+  const fistLead = new THREE.Mesh(geometryFor(part('fistLead').geometry), fistMaterial);
+  const fistRear = new THREE.Mesh(geometryFor(part('fistRear').geometry), fistMaterial);
   fistLead.castShadow = true;
   fistRear.castShadow = true;
   body.add(fistLead, fistRear);
 
-  const armLead = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.19, 1), limbMaterial);
-  const armRear = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 1), limbMaterial);
+  const armLead = new THREE.Mesh(geometryFor(part('armLead').geometry), limbMaterial);
+  const armRear = new THREE.Mesh(geometryFor(part('armRear').geometry), limbMaterial);
   body.add(armLead, armRear);
 
-  const footLead = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.22, 0.44), limbMaterial);
-  const footRear = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.22, 0.44), limbMaterial);
+  const footLead = new THREE.Mesh(geometryFor(part('footLead').geometry), limbMaterial);
+  const footRear = new THREE.Mesh(geometryFor(part('footRear').geometry), limbMaterial);
   footLead.castShadow = true;
   footRear.castShadow = true;
   body.add(footLead, footRear);
 
-  const legLead = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 1), limbMaterial);
-  const legRear = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 1), limbMaterial);
+  const legLead = new THREE.Mesh(geometryFor(part('legLead').geometry), limbMaterial);
+  const legRear = new THREE.Mesh(geometryFor(part('legRear').geometry), limbMaterial);
   body.add(legLead, legRear);
 
   const shoulderLead = new THREE.Vector3(0, 2.02, 0.42);
@@ -161,9 +201,14 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
   // --- the CRT head ------------------------------------------------------
 
+  const screenW = visual.screenSize[0];
+  const screenH = visual.screenSize[1];
+  const maxLines = Math.max(3, Math.round(6 * (screenH / 400)));
+  const charsPerLine = Math.max(10, Math.round(30 * (screenW / 640)));
+
   const canvas = document.createElement('canvas');
-  canvas.width = SCREEN_W;
-  canvas.height = SCREEN_H;
+  canvas.width = screenW;
+  canvas.height = screenH;
   const ctx = canvas.getContext('2d')!;
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -174,31 +219,37 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   head.rotation.y = inward * CAMERA_YAW;
   group.add(head);
 
+  const screenPart = part('screen');
   const screen = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.15, 1.34),
+    geometryFor(screenPart.geometry),
     new THREE.MeshBasicMaterial({ map: texture, toneMapped: false, side: THREE.DoubleSide })
   );
-  screen.position.z = 0.14;
+  screen.position.z = screenPart.position[2];
   head.add(screen);
 
-  const bezel = new THREE.Mesh(
-    new THREE.BoxGeometry(2.36, 1.56, 0.26),
-    new THREE.MeshStandardMaterial({
-      color: 0x080d16,
-      emissive: profile.accent,
-      emissiveIntensity: 0.3,
-      roughness: 0.45,
-      metalness: 0.7
-    })
-  );
+  const bezelPart = part('bezel');
+  const bezel = new THREE.Mesh(geometryFor(bezelPart.geometry), bezelMaterial);
+  bezel.position.set(bezelPart.position[0], bezelPart.position[1], bezelPart.position[2]);
   bezel.castShadow = true;
   head.add(bezel);
 
-  const neck = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.5, 0.16), limbMaterial);
-  neck.position.y = -0.9;
+  const neckPart = part('neck');
+  const neck = new THREE.Mesh(geometryFor(neckPart.geometry), limbMaterial);
+  neck.position.set(neckPart.position[0], neckPart.position[1], neckPart.position[2]);
   head.add(neck);
 
-  const glow = new THREE.PointLight(profile.accent, 5, 7, 2);
+  // The headline visual variety: box / three stacked slabs / octahedron+torus-crest /
+  // sphere, picked per-fighter by `visual.headShape` (see `HEAD_GEOMETRY` in
+  // fighter-plan.ts). None of these pieces are ever repositioned in update() — they
+  // just ride along with the head group, same as the bezel.
+  for (const headPart of plan.filter((p) => p.role === 'head' || p.role === 'crest')) {
+    const mesh = new THREE.Mesh(geometryFor(headPart.geometry), headMaterial);
+    mesh.position.set(headPart.position[0], headPart.position[1], headPart.position[2]);
+    mesh.castShadow = true;
+    head.add(mesh);
+  }
+
+  const glow = new THREE.PointLight(visual.accent, 5, 7, 2);
   glow.position.set(0, 0, 1.1);
   head.add(glow);
 
@@ -209,19 +260,19 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
   function paint(): void {
     ctx.fillStyle = '#040810';
-    ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+    ctx.fillRect(0, 0, screenW, screenH);
 
-    ctx.fillStyle = hex(profile.color);
-    ctx.fillRect(0, 0, SCREEN_W, 52);
+    ctx.fillStyle = hex(visual.color);
+    ctx.fillRect(0, 0, screenW, 52);
     ctx.fillStyle = '#040810';
     ctx.font = 'bold 28px ui-monospace, Menlo, Consolas, monospace';
     ctx.textBaseline = 'middle';
     ctx.fillText(`▌${profile.name}`, 16, 27);
-    ctx.fillText('— □ ×', SCREEN_W - 130, 27);
+    ctx.fillText('— □ ×', screenW - 130, 27);
 
     ctx.font = '24px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillStyle = hex(profile.accent);
-    const lines = wrap(currentText).slice(-MAX_LINES);
+    ctx.fillStyle = hex(visual.accent);
+    const lines = wrap(currentText, charsPerLine).slice(-maxLines);
     lines.forEach((line, i) => ctx.fillText(line, 16, 92 + i * 34));
 
     if (blinkOn) {
@@ -232,7 +283,7 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     }
 
     ctx.fillStyle = 'rgba(0,0,0,0.2)';
-    for (let y = 52; y < SCREEN_H; y += 4) ctx.fillRect(0, y, SCREEN_W, 2);
+    for (let y = 52; y < screenH; y += 4) ctx.fillRect(0, y, screenW, 2);
 
     texture.needsUpdate = true;
   }

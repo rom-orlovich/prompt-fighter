@@ -470,6 +470,93 @@ body {
   margin: 0 2px;
 }
 
+/* ---------- character select ---------- */
+
+.select-label {
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  margin-top: 6px;
+}
+
+.select-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 150px));
+  gap: 10px;
+  justify-content: center;
+  margin: 6px 0 4px;
+}
+
+.fighter-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+  background: #0b1120;
+  border: 2px solid #1e2942;
+  color: var(--ink);
+  font-family: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.fighter-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--warn);
+}
+.fighter-card.selected {
+  border-color: var(--warn);
+  box-shadow: 0 0 22px #ffd16655;
+}
+.fighter-card.is-p1 {
+  border-color: var(--p1);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--p1) 60%, transparent);
+}
+.fighter-card.is-p2 {
+  border-color: var(--p2);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--p2) 60%, transparent);
+}
+
+.fighter-preview {
+  width: 100%;
+  aspect-ratio: 220 / 280;
+  display: block;
+  background: radial-gradient(circle at 50% 30%, #101a2c, #05070d);
+}
+
+.fighter-card-label {
+  width: 100%;
+}
+.fighter-card-label b {
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.fighter-card-label i {
+  display: block;
+  font-style: normal;
+  font-size: 9px;
+  opacity: 0.5;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.fighter-card-abilities {
+  font-size: 7.5px;
+  letter-spacing: 0.03em;
+  opacity: 0.45;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  .select-grid {
+    grid-template-columns: repeat(2, minmax(100px, 140px));
+  }
+}
+
 .stages {
   display: flex;
   flex-wrap: wrap;

@@ -11,7 +11,25 @@ const THINKING_MS = 650;
 const CHUNK_MS = 55;
 const RECOVERY_MS = 750;
 
-export function createReplaySource(transcript: Transcript): MatchSource {
+export interface ReplaySourceOptions {
+  /**
+   * Multiplies every timing constant above. `1` (the default) is real arcade
+   * pacing; a smaller value (e.g. `0.03`, used behind `?fast=1`) compresses a
+   * whole transcript into a couple of seconds for automated end-to-end runs
+   * without changing the sequence of emitted events.
+   */
+  pace?: number;
+}
+
+export function createReplaySource(
+  transcript: Transcript,
+  options: ReplaySourceOptions = {}
+): MatchSource {
+  const pace = options.pace ?? 1;
+  const thinkingMs = THINKING_MS * pace;
+  const chunkMs = CHUNK_MS * pace;
+  const recoveryMs = RECOVERY_MS * pace;
+
   let index = 0;
   let stopped = false;
   let pending: ReturnType<typeof setTimeout> | null = null;
@@ -31,19 +49,19 @@ export function createReplaySource(transcript: Transcript): MatchSource {
       index += 1;
 
       handlers.onTurnStart(turn.speaker);
-      await sleep(THINKING_MS);
+      await sleep(thinkingMs);
       if (stopped) return false;
 
       let shown = '';
       for (const word of turn.text.split(' ')) {
         shown = shown ? `${shown} ${word}` : word;
         handlers.onTurnChunk(turn.speaker, shown);
-        await sleep(CHUNK_MS);
+        await sleep(chunkMs);
         if (stopped) return false;
       }
 
       handlers.onTurnEnd(turn.speaker, turn.text);
-      await sleep(RECOVERY_MS);
+      await sleep(recoveryMs);
       return !stopped;
     },
 

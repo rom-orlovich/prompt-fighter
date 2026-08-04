@@ -3,6 +3,7 @@
  * and mutates match state. Pure apart from that mutation — no timers, no rendering.
  */
 
+import { applyAbilities, legacySuperDamage } from './abilities';
 import { MAX_CREDIBILITY, MAX_METER } from './types';
 import type { CombatEvent, MatchState, MoveIntent, PlayerAction, Speaker } from './types';
 
@@ -19,8 +20,24 @@ export function newMatch(
   p2Name = 'CODEX'
 ): MatchState {
   return {
-    p1: { id: 'p1', name: p1Name, credibility: MAX_CREDIBILITY, meter: 0, combo: 0, roundsWon: 0 },
-    p2: { id: 'p2', name: p2Name, credibility: MAX_CREDIBILITY, meter: 0, combo: 0, roundsWon: 0 },
+    p1: {
+      id: 'p1',
+      name: p1Name,
+      credibility: MAX_CREDIBILITY,
+      meter: 0,
+      combo: 0,
+      roundsWon: 0,
+      shield: 0
+    },
+    p2: {
+      id: 'p2',
+      name: p2Name,
+      credibility: MAX_CREDIBILITY,
+      meter: 0,
+      combo: 0,
+      roundsWon: 0,
+      shield: 0
+    },
     round: 1,
     playerSide
   };
@@ -66,18 +83,50 @@ export function resolve(input: ResolveInput): CombatEvent[] {
     events.push({ type: 'hit', target: attacker, damage: intent.selfDamage, crit: false });
   }
 
-  atk.meter = Math.min(MAX_METER, atk.meter + intent.meterGain);
-  events.push({ type: 'meter', who: attacker, value: atk.meter });
+  // Preliminary super check drives which half of a fighter's ability kit can even
+  // be considered — deliberately computed from the RAW meter gain only (never
+  // including an ability's own meter bonus), so triggering an ability can never
+  // retroactively decide whether this turn counted as a super.
+  const meterAfterGain = Math.min(MAX_METER, atk.meter + intent.meterGain);
+  const isSuper = meterAfterGain >= MAX_METER && intent.power > 0;
 
-  let damage = intent.power * (1 + atk.combo * 0.1);
+  const comboDamage = intent.power * (1 + atk.combo * 0.1);
+  const baseDamage = isSuper ? legacySuperDamage(intent.power) : comboDamage;
+
+  const abilities = applyAbilities({
+    fighterName: atk.name,
+    intent,
+    attacker,
+    isSuper,
+    baseDamage
+  });
+
+  let damage = abilities.damage;
   let crit = intent.kind === 'CRIT';
   let countered = false;
 
-  const isSuper = atk.meter >= MAX_METER && intent.power > 0;
+  if (abilities.heal > 0) {
+    atk.credibility = Math.min(MAX_CREDIBILITY, atk.credibility + abilities.heal);
+  }
+  if (abilities.shield > 0) {
+    atk.shield += abilities.shield;
+  }
+  if (abilities.selfDamage > 0) {
+    atk.credibility = Math.max(0, atk.credibility - abilities.selfDamage);
+  }
+  if (abilities.comboReset) {
+    def.combo = 0;
+  }
+
+  // A super always drains the meter to zero regardless of any ability's own meter
+  // bonus (there is nothing left to bank once the bar has just been spent).
+  atk.meter = isSuper ? 0 : Math.min(MAX_METER, meterAfterGain + abilities.meterBonus);
+  events.push({ type: 'meter', who: attacker, value: atk.meter });
+
+  events.push(...abilities.events);
+
   if (isSuper) {
-    damage = 32 + intent.power * 0.5;
     crit = true;
-    atk.meter = 0;
     events.push({
       type: 'super',
       by: attacker,
@@ -161,15 +210,36 @@ export function resolve(input: ResolveInput): CombatEvent[] {
 
   damage = Math.round(damage);
 
+  // Every credibility-affecting hit this turn (the main attack, plus a super's
+  // direct drain if one fired) goes through the same shield-absorption step —
+  // a fighter's shield always eats damage before credibility does, whichever
+  // source the damage came from.
+  const outcome: { hits: { target: Speaker; amount: number; blocked: boolean; crit: boolean }[] } = {
+    hits: []
+  };
+
   if (!countered && damage > 0) {
-    def.credibility = Math.max(0, def.credibility - damage);
-    events.push(
-      blocked
-        ? { type: 'blocked', target: defender, damage }
-        : { type: 'hit', target: defender, damage, crit }
-    );
-  } else if (!countered && intent.power === 0 && intent.selfDamage === 0) {
+    outcome.hits.push({ target: defender, amount: damage, blocked, crit });
+  } else if (!countered && intent.power === 0 && intent.selfDamage === 0 && abilities.drain === 0) {
     events.push({ type: 'whiff', by: attacker });
+  }
+
+  if (!countered && abilities.drain > 0) {
+    outcome.hits.push({ target: defender, amount: abilities.drain, blocked: false, crit: false });
+  }
+
+  for (const hit of outcome.hits) {
+    const target = state[hit.target];
+    const absorbed = Math.min(target.shield, hit.amount);
+    target.shield -= absorbed;
+    const remaining = hit.amount - absorbed;
+    if (remaining <= 0) continue;
+    target.credibility = Math.max(0, target.credibility - remaining);
+    events.push(
+      hit.blocked
+        ? { type: 'blocked', target: hit.target, damage: remaining }
+        : { type: 'hit', target: hit.target, damage: remaining, crit: hit.crit }
+    );
   }
 
   for (const side of ['p1', 'p2'] as const) {
