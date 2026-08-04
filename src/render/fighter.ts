@@ -51,6 +51,13 @@ export interface FighterRig {
   rootPosition(): THREE.Vector3;
   /** Current world position of the whole fighter (neutral X plus any offset). */
   worldPosition(): THREE.Vector3;
+  /**
+   * World-space vertical extent of the loaded body + hair meshes — `null` until
+   * both have settled (loaded or failed to load). Self-correcting camera framing
+   * (see `select.ts`) reads this instead of a hard-coded height, so a future
+   * rescale re-frames the preview instead of silently cropping a head again.
+   */
+  measuredBounds(): { top: number; bottom: number } | null;
   /** Neutral X this fighter recovers to. */
   neutralX(): number;
   /** Step in toward the opponent so a strike actually reaches: 0-1 scale. */
@@ -346,6 +353,11 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let handBones: THREE.Object3D[] = [];
   let chestBone: THREE.Object3D | null = null;
   let hipBone: THREE.Object3D | null = null;
+  // Gate `measuredBounds()` on BOTH assets having settled (loaded or failed) —
+  // measuring right after the body loads but before the hair arrives would
+  // frame the camera a beat too tight, missing the hair's margin.
+  let bodyLoaded = false;
+  let hairSettled = false;
   /** Both shoulders — the victory flourish swings from here, not the wrist, so a
    * modest rotation still carries the hand through a wide arc. */
   let upperArmBones: THREE.Object3D[] = [];
@@ -498,6 +510,7 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       upperArmBones = [findBone(scene, 'upperarm_l'), findBone(scene, 'upperarm_r')].filter(
         (bone): bone is THREE.Object3D => bone !== null
       );
+      bodyLoaded = true;
 
       mixer = new THREE.AnimationMixer(scene);
 
@@ -536,16 +549,19 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
             const skinned = obj as THREE.SkinnedMesh;
             if (skinned.isSkinnedMesh && !hairMesh) hairMesh = skinned;
           });
-          if (!hairMesh) return;
-          const skinned = hairMesh as THREE.SkinnedMesh;
-          const bones = skinned.skeleton.bones.map((bone) => bodyBones.get(bone.name) ?? bone);
-          tint(skinned, HAIR_COLOR, false);
-          skinned.bind(new THREE.Skeleton(bones, skinned.skeleton.boneInverses), skinned.bindMatrix);
-          scene.add(skinned);
+          if (hairMesh) {
+            const skinned = hairMesh as THREE.SkinnedMesh;
+            const bones = skinned.skeleton.bones.map((bone) => bodyBones.get(bone.name) ?? bone);
+            tint(skinned, HAIR_COLOR, false);
+            skinned.bind(new THREE.Skeleton(bones, skinned.skeleton.boneInverses), skinned.bindMatrix);
+            scene.add(skinned);
+          }
+          hairSettled = true;
         },
         undefined,
         () => {
           // No hair: the fighter is simply bald, which is not worth failing over.
+          hairSettled = true;
         }
       );
 
@@ -712,6 +728,19 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
     worldPosition() {
       return group.getWorldPosition(new THREE.Vector3());
+    },
+
+    measuredBounds() {
+      if (!bodyLoaded || !hairSettled) return null;
+      // `model` holds only the loaded body scene (and the hair rebound onto it,
+      // see above) — never the sprite/trail, which would otherwise pull the box
+      // up over the head or out toward the fist. `updateWorldMatrix(true, false)`
+      // forces the whole ancestor chain (group -> holder -> scene) current first,
+      // matching the pattern already used by `boneWorld`/`getWorldPosition`
+      // above, so this is correct regardless of whether a render happened yet.
+      model.updateWorldMatrix(true, false);
+      const box = new THREE.Box3().setFromObject(model);
+      return { top: box.max.y, bottom: box.min.y };
     },
 
     neutralX() {

@@ -18,6 +18,39 @@ import type { FighterRig } from './fighter';
 
 const PREVIEW_WIDTH = 220;
 const PREVIEW_HEIGHT = 280;
+const PREVIEW_FOV = 40;
+
+/**
+ * Fraction of the camera's vertical half-frame a fighter's own measured height
+ * should fill, symmetric around its own vertical centre. Well inside 1 so every
+ * card keeps headroom above the hair and footroom below the floor instead of
+ * cropping either edge.
+ */
+const PREVIEW_FIT = 0.82;
+
+/**
+ * Solves the camera placement that fits a fighter's measured `[bottom, top]`
+ * world-Y span into `fit` of the vertical frustum, centred on the span's own
+ * midpoint. This is what makes the framing self-correcting: it reads the
+ * fighter's ACTUAL rendered height (body + hair) rather than a constant tuned
+ * against today's roster, so a future rescale re-frames the card instead of
+ * silently cropping a head again — and because every fighter is solved against
+ * the same `fit`, all four read at the same on-screen size regardless of how
+ * tall they actually are.
+ */
+export function frameFighter(
+  top: number,
+  bottom: number,
+  fovDeg: number = PREVIEW_FOV,
+  fit: number = PREVIEW_FIT
+): { cameraY: number; distance: number } {
+  const halfFovRad = (fovDeg * Math.PI) / 360;
+  const halfHeight = (top - bottom) / 2;
+  return {
+    cameraY: (top + bottom) / 2,
+    distance: halfHeight / (fit * Math.tan(halfFovRad))
+  };
+}
 
 interface CardEntry {
   name: FighterId;
@@ -26,6 +59,9 @@ interface CardEntry {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   rig: FighterRig;
+  /** Set once `frameFighter` has been applied from a real measurement — after
+   * that this card's camera is left alone (see `frame()`). */
+  framed: boolean;
 }
 
 export interface SelectScreenOptions {
@@ -54,7 +90,9 @@ function buildPreviewScene(profile: FighterProfile): {
 } {
   const scene = new THREE.Scene();
 
-  const camera = new THREE.PerspectiveCamera(40, PREVIEW_WIDTH / PREVIEW_HEIGHT, 0.1, 30);
+  // A reasonable placeholder until the rig's assets finish loading and
+  // `frameFighter` re-poses this from a real measurement (see `frame()` below).
+  const camera = new THREE.PerspectiveCamera(PREVIEW_FOV, PREVIEW_WIDTH / PREVIEW_HEIGHT, 0.1, 30);
   camera.position.set(0, 1.9, 4.6);
   camera.lookAt(0, 1.55, 0);
 
@@ -137,7 +175,7 @@ export function createSelectScreen(container: HTMLElement, options: SelectScreen
     rig.setPose('idle');
     rig.setScreenText(profile.name);
 
-    cards.push({ name, button, renderer, scene, camera, rig });
+    cards.push({ name, button, renderer, scene, camera, rig, framed: false });
   }
 
   // One shared rAF loop drives every card — four live previews, one callback.
@@ -162,6 +200,18 @@ export function createSelectScreen(container: HTMLElement, options: SelectScreen
     const dt = Math.min(clock.getDelta(), 0.05);
     const elapsed = clock.getElapsedTime();
     for (const entry of cards) {
+      // One-time re-frame the instant a real measurement is available (both
+      // the body and hair have settled — see `measuredBounds`). Skipped ever
+      // after: nothing about a fighter's height changes post-load.
+      if (!entry.framed) {
+        const bounds = entry.rig.measuredBounds();
+        if (bounds) {
+          const { cameraY, distance } = frameFighter(bounds.top, bounds.bottom);
+          entry.camera.position.set(0, cameraY, distance);
+          entry.camera.lookAt(0, cameraY, 0);
+          entry.framed = true;
+        }
+      }
       entry.rig.update(dt, elapsed);
       entry.renderer.render(entry.scene, entry.camera);
     }
