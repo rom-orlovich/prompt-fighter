@@ -177,6 +177,14 @@ interface DebugBridge {
   audio: Record<SfxCue, number>;
   /** Every measured impact of the current (or most recent) match. */
   contacts: ContactRecord[];
+  /**
+   * Every time the HUD combo counter actually popped, presentation-side, for
+   * the current (or most recent) match — distinct from the engine's own
+   * `combo` event, which needs the same attacker to land two `continuesThread`
+   * hits in a row and never reaches count >= 2 against an alternating-speaker
+   * transcript. See `turnAttacker`/`turnHitCount` in `handleEvent`.
+   */
+  presentationCombos: { side: Speaker; count: number }[];
   /** Runs a bundled transcript through the engine with no rendering, no timers
    * and no player input — the fastest way to inspect a deterministic outcome. */
   simulate(file: string): Promise<SimulateResult>;
@@ -225,6 +233,7 @@ window.__pf = {
   camera: { position: [0, 0, 0], rest: stage.cameraRest.toArray() as Vec3 },
   audio: audioCounts,
   contacts: [],
+  presentationCombos: [],
   async simulate(file) {
     const transcript = await loadTranscript(`${import.meta.env.BASE_URL}transcripts/${file}`);
     return simulateTranscript(transcript);
@@ -427,9 +436,12 @@ async function startMatch(file: string): Promise<void> {
   window.__pf.matchEndedAt = null;
   window.__pf.koAt = null;
   window.__pf.contacts = [];
+  window.__pf.presentationCombos = [];
   openContacts.length = 0;
   standingRootY.p1 = 0;
   standingRootY.p2 = 0;
+  turnAttacker = null;
+  turnHitCount = 0;
 
   const p1 = profileFor(matchup.p1.fighter);
   const p2 = profileFor(matchup.p2.fighter);
@@ -592,6 +604,26 @@ const KNOCKBACK_CRIT = 1.6;
 /** How far a fighter steps in on its own strike (0-1, scaled in the rig). */
 const LUNGE_STRENGTH = 1;
 
+/**
+ * Presentation-side combo tracking (G10).
+ *
+ * The engine's own `combo` event needs the SAME attacker to land two
+ * `continuesThread` hits in consecutive turns — but every bundled transcript
+ * alternates speakers, so the attacker always changes turn to turn and that
+ * count never exceeds 1. It is not a bug in the counter, it is a trigger that
+ * cannot fire against this content.
+ *
+ * A single turn can still land more than one `hit` on the opponent, though: a
+ * super's own damage plus an ability's `drain` effect both resolve as
+ * separate `hit` events against the same defender in the same turn (see
+ * `combat.ts`'s `outcome.hits`). That IS a real multi-hit flourish an
+ * attacker landed in one exchange, so it is what drives the HUD combo counter
+ * here — purely presentational, no engine event or damage value is touched.
+ */
+let turnAttacker: Speaker | null = null;
+/** Hits landed against the opponent (not self-damage) so far this turn. */
+let turnHitCount = 0;
+
 const LOUD_LABELS = new Set([
   'CITED EVIDENCE',
   'HONEST CORRECTION',
@@ -615,6 +647,10 @@ function handleEvent(event: CombatEvent): void {
       rigs[event.by].lunge(LUNGE_STRENGTH);
       sfx.whoosh();
       if (LOUD_LABELS.has(event.label)) hud.announce(event.label);
+      // A new turn's own hits start their own count — see the comment above
+      // `turnAttacker`.
+      turnAttacker = event.by;
+      turnHitCount = 0;
       break;
     }
 
@@ -641,6 +677,17 @@ function handleEvent(event: CombatEvent): void {
       fx.damageNumber(rig.headPosition(), event.damage, event.crit);
       event.crit ? sfx.crit() : sfx.hit();
       syncBars();
+
+      // A hit against the attacker itself (self-damage, e.g. an overreach
+      // ability) doesn't count toward the flurry — only blows that actually
+      // landed on the opponent this turn do.
+      if (event.target !== turnAttacker && turnAttacker !== null) {
+        turnHitCount += 1;
+        if (turnHitCount >= 2) {
+          hud.combo(turnAttacker, turnHitCount);
+          window.__pf.presentationCombos.push({ side: turnAttacker, count: turnHitCount });
+        }
+      }
       break;
     }
 

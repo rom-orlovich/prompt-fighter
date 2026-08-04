@@ -136,8 +136,29 @@ const POSE_TIME_SCALE: Record<PoseName, number> = {
   guard: 0.7,
   hurt: 1.1,
   ko: 1,
-  win: 1
+  win: 1.15
 };
+
+/**
+ * The victory flourish, layered on top of `Dance_Loop` rather than replacing
+ * it — measured, `win` on its own moves the winner's hand ~0.5 world units
+ * total across a 3s window, which reads as "standing next to a body", not a
+ * celebration. This is a fist-pump jump: both arms swing up in time with a
+ * hop, applied as a world-space rotation so it reads correctly regardless of
+ * the vendored rig's own local bone-axis convention.
+ */
+const VICTORY_CYCLE_HZ = 2.1;
+/**
+ * Peak arm swing, in radians, added on top of whatever `Dance_Loop` is doing.
+ * Tuned by rendering and looking at it: past ~2.2 the arms swing far enough
+ * behind the shoulder to vanish behind the torso/head from the camera's
+ * front-on angle, which reads as broken rather than triumphant.
+ */
+const VICTORY_ARM_SWING = 2.05;
+/** Peak hop height, in world units. */
+const VICTORY_HOP_HEIGHT = 0.7;
+/** Seconds the winner takes to turn from its 3/4 fighting stance to face the camera. */
+const VICTORY_FACE_TURN_S = 0.4;
 
 /**
  * The vendored rig is authored facing +Z (verified by rendering it at 0, ±PI/2
@@ -325,6 +346,9 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let handBones: THREE.Object3D[] = [];
   let chestBone: THREE.Object3D | null = null;
   let hipBone: THREE.Object3D | null = null;
+  /** Both shoulders — the victory flourish swings from here, not the wrist, so a
+   * modest rotation still carries the hand through a wide arc. */
+  let upperArmBones: THREE.Object3D[] = [];
   const tintedMaterials: THREE.MeshStandardMaterial[] = [];
 
   // --- footwork -----------------------------------------------------------
@@ -360,6 +384,19 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
   let trailStrength = 0;
   let trailPrimed = false;
+
+  // --- victory flourish -----------------------------------------------------
+  //
+  // Seconds since this rig last entered `win`; drives the hop/arm-pump cycle.
+  // Reset whenever `win` is (re-)entered so a rematch doesn't inherit the
+  // previous match's phase.
+  let victoryTime = 0;
+  // Scratch objects for the world-space bone rotation, reused every frame so
+  // the flourish allocates nothing per tick (see `update`).
+  const victoryWorldAxis = new THREE.Vector3(1, 0, 0);
+  const victoryParentQuat = new THREE.Quaternion();
+  const victoryLocalAxis = new THREE.Vector3();
+  const victoryDelta = new THREE.Quaternion();
 
   let pendingPose: PoseName = 'idle';
   /** Action pinned to a held frame (see POSE_FREEZE), and the frame it holds. */
@@ -458,6 +495,9 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       );
       chestBone = findBone(scene, 'spine_03') ?? findBone(scene, 'spine_02') ?? headBone;
       hipBone = findBone(scene, 'pelvis') ?? findBone(scene, 'root');
+      upperArmBones = [findBone(scene, 'upperarm_l'), findBone(scene, 'upperarm_r')].filter(
+        (bone): bone is THREE.Object3D => bone !== null
+      );
 
       mixer = new THREE.AnimationMixer(scene);
 
@@ -604,6 +644,9 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     group,
 
     setPose(pose) {
+      // (Re-)entering `win` restarts the flourish's hop/pump cycle from the
+      // bottom rather than picking up wherever the last celebration left off.
+      if (pose === 'win' && pendingPose !== 'win') victoryTime = 0;
       pendingPose = pose;
       // Light the trail on the strike itself; every other pose lets it die out.
       if (pose === 'attack') {
@@ -696,6 +739,11 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       knockOffset = 0;
       knockVelocity = 0;
       group.position.x = baseX;
+      // A fresh round must not inherit the last round's victory hop/turn —
+      // snap both back immediately rather than letting `update` ease them out.
+      group.position.y = 0;
+      model.rotation.y = facingFor(side);
+      victoryTime = 0;
     },
 
     update(dt, _elapsed, real) {
@@ -733,6 +781,40 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       if (frozenAction) {
         frozenAction.time = frozenTime;
         frozenAction.paused = true;
+      }
+
+      // Victory flourish: `Dance_Loop` alone barely moves the winner (measured:
+      // ~0.5 world units of hand travel across a 3s window), so this layers a
+      // hop + double-arm-pump on top of it, plus a turn to face the camera. Runs
+      // on real time so it keeps going even if a stray hit-stop somehow overlaps
+      // the win pose. Fully self-resetting: any pose other than `win` decays the
+      // hop/turn back to the fighting stance instead of requiring a separate
+      // cleanup path.
+      {
+        const inVictory = pendingPose === 'win';
+        if (inVictory) victoryTime += realDt;
+        const cyclePhase = victoryTime * VICTORY_CYCLE_HZ * Math.PI * 2;
+        const hop = inVictory ? Math.abs(Math.sin(cyclePhase)) * VICTORY_HOP_HEIGHT : 0;
+        group.position.y = hop;
+
+        const facingTarget = inVictory ? 0 : facingFor(side);
+        const turnRate = 1 - Math.pow(0.001, realDt / VICTORY_FACE_TURN_S);
+        model.rotation.y += (facingTarget - model.rotation.y) * turnRate;
+
+        if (inVictory && upperArmBones.length) {
+          // Both arms raise together: rotating around a fixed WORLD axis (rather
+          // than each bone's own local axis) means the arms swing up correctly
+          // regardless of which way the vendored skeleton's bones are authored,
+          // and left/right stay symmetric despite being mirrored in local space.
+          const swing = (0.5 - 0.5 * Math.cos(cyclePhase)) * VICTORY_ARM_SWING;
+          for (const bone of upperArmBones) {
+            if (!bone.parent) continue;
+            bone.parent.getWorldQuaternion(victoryParentQuat).invert();
+            victoryLocalAxis.copy(victoryWorldAxis).applyQuaternion(victoryParentQuat).normalize();
+            victoryDelta.setFromAxisAngle(victoryLocalAxis, swing);
+            bone.quaternion.premultiply(victoryDelta);
+          }
+        }
       }
 
       // Punch trail: follow the fist while the strike is hot, then fade.

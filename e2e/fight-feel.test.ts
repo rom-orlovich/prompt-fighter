@@ -45,11 +45,12 @@ interface Contact {
   cameraPeak: number;
 }
 
-async function startMatch(page: Page, query: string): Promise<void> {
+/** `cardIndex` picks which bundled transcript to run — see `STAGES` in `main.ts`. */
+async function startMatch(page: Page, query: string, cardIndex = 0): Promise<void> {
   await page.goto(query);
   const stageCards = page.locator('.stage-card');
-  await expect(stageCards.first()).toBeVisible();
-  await stageCards.first().click();
+  await expect(stageCards.nth(cardIndex)).toBeVisible();
+  await stageCards.nth(cardIndex).click();
   await page.waitForFunction(() => (window as any).__pf.selection !== null);
 }
 
@@ -254,5 +255,126 @@ test.describe('fight feel', () => {
     ).toBe(3);
     expect(styles.five.fontSize).toBeGreaterThan(styles.two.fontSize);
     expect(styles.eight.fontSize).toBeGreaterThan(styles.five.fontSize);
+  });
+
+  // --- G9: the victory must read as a victory -------------------------------
+  test('the winner celebrates — measured hand travel and a screenshot check', async ({ page }) => {
+    test.setTimeout(180000);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+
+    // Needs real rendering for the screenshots below to mean anything; `draw=1`
+    // is the "watchable match" flag, not the sampling itself (that reads
+    // `window.__pf.rigs`, which is live under plain `?fast=1` too). Same caveat
+    // as `demo-recording.test.ts`: under a software rasteriser the real render
+    // loop runs at ~2fps, `scene.ts` clamps each frame's delta to 0.05s, and the
+    // arcade clock crawls — the match would never reach `matchEnd` inside any
+    // sane timeout, so this self-skips rather than proving nothing slowly.
+    await page.goto('/');
+    const renderer = await page.evaluate(() => {
+      const probe = document.createElement('canvas');
+      const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+      if (!gl) return 'none';
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : 'unknown';
+    });
+    test.skip(
+      /swiftshader|llvmpipe|software|none/i.test(renderer),
+      `software rasteriser (${renderer}) cannot sustain the render loop — run with --headed on a real GPU`
+    );
+
+    await startMatch(page, '/?fast=1&hold=1&draw=1');
+
+    await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
+      timeout: 120000
+    });
+
+    const winner = await page.evaluate(() => {
+      const end = (window as any).__pf.events.filter((e: any) => e.type === 'matchEnd').pop();
+      return end.winner as 'p1' | 'p2';
+    });
+    const loser = winner === 'p1' ? 'p2' : 'p1';
+
+    // MEASURED: sample the winner's hand every ~150ms for 3s after matchEnd.
+    const samples: number[][] = await page.evaluate(async (side) => {
+      const out: number[][] = [];
+      const until = Date.now() + 3000;
+      while (Date.now() < until) {
+        const rigs = (window as any).__pf.rigs;
+        out.push(rigs[side].hand as number[]);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      return out;
+    }, winner);
+
+    expect(samples.length, 'enough samples over the 3s window').toBeGreaterThan(10);
+    const axisRange = (axis: number) =>
+      Math.max(...samples.map((s) => s[axis]!)) - Math.min(...samples.map((s) => s[axis]!));
+    const ranges = [axisRange(0), axisRange(1), axisRange(2)];
+    console.log('winner hand-position ranges x/y/z:', ranges.map((n) => n.toFixed(3)));
+    expect(
+      Math.max(...ranges),
+      `winner hand-position range x/y/z = ${ranges.map((n) => n.toFixed(2)).join('/')} (was 0.46/0.58 before the fix)`
+    ).toBeGreaterThan(1.2);
+
+    // (c) the loser must still be down — this reads well past matchEnd+1.5s
+    // since the 3s sampling loop above already ran.
+    const rigs = await page.evaluate(() => (window as any).__pf.rigs);
+    expect(rigs[loser].pose, 'loser stays down through the winner\'s celebration').toBe('ko');
+    expect(
+      rigs[loser].root[1],
+      `loser hips (${rigs[loser].root[1].toFixed(2)}) stay under 30% of standing height (${rigs[
+        loser
+      ].standingRootY.toFixed(2)})`
+    ).toBeLessThanOrEqual(rigs[loser].standingRootY * 0.3);
+
+    // LOOKED AT: screenshot the winner at several moments, result card hidden,
+    // for a human/agent to actually look at (see rollout step 1).
+    await page.evaluate(() => {
+      const result = document.getElementById('result');
+      if (result) result.style.display = 'none';
+    });
+    mkdirSync(SHOTS, { recursive: true });
+    for (let i = 0; i < 4; i++) {
+      await page.screenshot({ path: join(SHOTS, `victory-${i}.png`) });
+      await page.waitForTimeout(350);
+    }
+
+    expect(errors).toEqual([]);
+  });
+
+  // --- G10: combo feedback must fire in a real match, not just when driven --
+  test('the combo counter actually fires during a real match, not only when driven', async ({
+    page
+  }) => {
+    test.setTimeout(180000);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+
+    // `tabs-vs-spaces.json` (the second stage card, GEMINI vs LOCAL 7B) is the
+    // transcript that actually exercises the trigger: GEMINI's super,
+    // CONTEXT WINDOW SLAM, has a `drain` effect, which lands as a second `hit`
+    // event against the same defender in the same turn (see `combat.ts`'s
+    // `outcome.hits`). CLAUDE/CODEX's supers in `microservices.json` don't
+    // drain, so that matchup never produces a real multi-hit turn — this is
+    // an honest trigger, not one that fires everywhere.
+    await startMatch(page, FIGHT, 1);
+    await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
+      timeout: 120000
+    });
+
+    const combos: { side: string; count: number }[] = await page.evaluate(
+      () => (window as any).__pf.presentationCombos
+    );
+    console.log('presentation combos observed in a real match:', JSON.stringify(combos));
+
+    expect(combos.length, 'the HUD combo counter fired at least once in an undriven match').toBeGreaterThan(
+      0
+    );
+    for (const combo of combos) {
+      expect(combo.count, `displayed combo count for ${combo.side}`).toBeGreaterThanOrEqual(2);
+    }
+
+    expect(errors).toEqual([]);
   });
 });
