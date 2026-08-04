@@ -1,44 +1,54 @@
 /**
- * Per-fighter character asset spec.
+ * Per-fighter character spec.
  *
- * A `CharacterSpec` is pure data: no Three.js, no DOM. It maps each roster
- * fighter directly onto one of the four vendored KayKit character models —
- * no body/hairstyle recombination, since that model never matched the real
- * vendored assets. Kept dependency-free so it can be unit-tested under
- * plain Node/Vitest with no browser, exactly like `src/roster/visuals.ts`.
+ * A `CharacterSpec` is pure data: no Three.js, no DOM. Every fighter now wears
+ * the *same* realistically-proportioned humanoid rig (Quaternius, CC0) — the
+ * roster's earlier KayKit models were four visibly different characters, but
+ * they were chibi fantasy adventurers, which read nothing like a fistfight.
+ *
+ * Sharing one rig means silhouette variety has to come from somewhere else, so
+ * each fighter gets its own brand tint, its own `modelScale` (height) and its
+ * own `bulk` (width/depth). A hulking GEMINI and a compact LOCAL 7B still read
+ * apart at a glance, they are just no longer different *characters*.
+ *
+ * Kept dependency-free so it can be unit-tested under plain Node/Vitest with no
+ * browser, exactly like `src/roster/visuals.ts`.
  */
 
-/** The four vendored KayKit character models. */
-export type CharacterModelId = 'Barbarian' | 'Knight' | 'Mage' | 'Rogue';
+/** The single vendored fighter rig. Every roster entry uses it. */
+export type CharacterModelId = 'Fighter';
 
-/** All vendored KayKit character models — one per fighter, no repeats. */
-export const CHARACTER_MODELS: readonly CharacterModelId[] = ['Barbarian', 'Knight', 'Mage', 'Rogue'];
+export const CHARACTER_MODEL: CharacterModelId = 'Fighter';
+
+/** Natural height of the vendored rig, measured from its bounding box in the guard stance. */
+export const RIG_NATURAL_HEIGHT = 1.83;
 
 export interface CharacterSpec {
   /** Display name, mirrors the roster key. */
   name: string;
-  /** Vendored KayKit model this fighter wears. */
+  /** Vendored rig this fighter wears — currently always `Fighter`. */
   model: CharacterModelId;
   /** One-line description — must be unique per fighter. */
   description: string;
-  /** Skin tint applied to the model — MUST equal `ROSTER[name].color`. */
+  /** Skin tint applied to the rig — MUST equal `ROSTER[name].color`. */
   skin: number;
-  /**
-   * The vendored model's own height in world units, measured from its bounding
-   * box in the Idle pose. Recorded here so `modelScale` reads as a derivation
-   * rather than a magic number: `arenaHeight(spec)` is what actually has to land
-   * in the arena's band, and the two models differ enough (2.37 to 2.98) that a
-   * shared scale would size them wildly differently on screen.
-   */
+  /** The rig's own height in world units, before scaling. */
   modelHeight: number;
-  /** Uniform scale applied so the glTF model matches arena height. */
+  /** Uniform height scale, so `arenaHeight` lands in the band the camera frames. */
   modelScale: number;
+  /**
+   * Width/depth multiplier layered on top of `modelScale`. This is the only
+   * knob that separates a stocky fighter from a lean one now that all four
+   * share a mesh — kept mild (0.9-1.15) because a skinned humanoid stretched
+   * much past that starts to read as broken rather than heavyset.
+   */
+  bulk: number;
 }
 
 /**
- * How tall this fighter actually stands in the arena. The old procedural rigs
- * put the head at y=3.12, so the camera is framed for roughly this range —
- * anything near double it fills the frame and crops at the waist.
+ * How tall this fighter actually stands in the arena. The procedural rig this
+ * all replaced put its head at y=3.12, so the camera is framed for roughly this
+ * range — a pass at double it cropped every fighter at the waist on screen.
  */
 export function arenaHeight(spec: CharacterSpec): number {
   return spec.modelHeight * spec.modelScale;
@@ -47,44 +57,49 @@ export function arenaHeight(spec: CharacterSpec): number {
 export const CHARACTERS: Record<string, CharacterSpec> = {
   CLAUDE: {
     name: 'CLAUDE',
-    model: 'Mage',
-    description: 'a measured spellcaster, weighing every word before it casts',
+    model: 'Fighter',
+    description: 'a measured counter-puncher, lean and deliberate',
     skin: 0xd97757,
-    modelHeight: 2.976,
-    modelScale: 1.09
+    modelHeight: RIG_NATURAL_HEIGHT,
+    modelScale: 1.78,
+    bulk: 0.97
   },
   CODEX: {
     name: 'CODEX',
-    model: 'Knight',
-    description: 'an armored knight that charges in fully certain, right or wrong',
+    model: 'Fighter',
+    description: 'a front-foot brawler that commits to every swing',
     skin: 0x10a37f,
-    modelHeight: 2.44,
-    modelScale: 1.39
+    modelHeight: RIG_NATURAL_HEIGHT,
+    modelScale: 1.86,
+    bulk: 1.1
   },
   GEMINI: {
     name: 'GEMINI',
-    model: 'Barbarian',
-    description: 'a hulking barbarian that overwhelms the arena with sheer context',
+    model: 'Fighter',
+    description: 'a hulking heavyweight that overwhelms with sheer reach',
     skin: 0x4285f4,
-    modelHeight: 2.371,
-    modelScale: 1.54
+    modelHeight: RIG_NATURAL_HEIGHT,
+    modelScale: 2.0,
+    bulk: 1.15
   },
   'LOCAL 7B': {
     name: 'LOCAL 7B',
-    model: 'Rogue',
-    description: 'a quick, lightweight rogue — fast strikes, shallow reads',
+    model: 'Fighter',
+    description: 'a compact featherweight — fast hands, shallow reads',
     skin: 0xa855f7,
-    modelHeight: 2.585,
-    modelScale: 1.14
+    modelHeight: RIG_NATURAL_HEIGHT,
+    modelScale: 1.61,
+    bulk: 0.9
   }
 };
 
 const FALLBACK_CHARACTER: Omit<CharacterSpec, 'name'> = {
-  model: 'Knight',
-  description: 'an unlabeled construct, plain and unknown',
+  model: 'Fighter',
+  description: 'an unlabeled contender, plain and unknown',
   skin: 0x8899aa,
-  modelHeight: 2.44,
-  modelScale: 1.35
+  modelHeight: RIG_NATURAL_HEIGHT,
+  modelScale: 1.8,
+  bulk: 1
 };
 
 export function characterFor(name: string): CharacterSpec {
@@ -95,7 +110,7 @@ export function characterFor(name: string): CharacterSpec {
 
 /** A short deterministic string that is unique per distinct spec — used only by tests. */
 export function characterSignature(spec: CharacterSpec): string {
-  return [spec.name, spec.model, spec.description, spec.skin, spec.modelHeight, spec.modelScale].join('|');
+  return [spec.name, spec.model, spec.description, spec.skin, spec.modelScale, spec.bulk].join('|');
 }
 
 /** Resolves a vendored model id to its local, same-origin `.glb` path under the app base. */

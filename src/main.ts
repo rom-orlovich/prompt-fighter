@@ -379,7 +379,13 @@ function handleEvent(event: CombatEvent): void {
 
     case 'super': {
       hud.announce(event.name);
-      stage.shake(1.1);
+      const attacker = rigs[event.by];
+      const victim = rigs[event.by === 'p1' ? 'p2' : 'p1'];
+      // The named-special FX carry their own themed burst/ring and shake the
+      // stage themselves; only fall back to the generic treatment when this
+      // super isn't one of the four catalogued moves.
+      const spec = fx.special(event.name, victim.headPosition(), attacker.headPosition());
+      if (!spec) stage.shake(1.1);
       stage.hitstop(260);
       stage.zoomPunch(1.1);
       sfx.crit();
@@ -389,8 +395,11 @@ function handleEvent(event: CombatEvent): void {
     case 'ability': {
       const rig = rigs[event.by];
       hud.announce(event.name);
-      fx.burst(rig.headPosition(), 0xffe08a, 46, 5);
-      stage.shake(0.35);
+      const spec = fx.special(event.name, rig.headPosition());
+      if (!spec) {
+        fx.burst(rig.headPosition(), 0xffe08a, 46, 5);
+        stage.shake(0.35);
+      }
       sfx.hit();
       break;
     }

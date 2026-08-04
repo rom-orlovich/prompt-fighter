@@ -32,22 +32,84 @@ export interface FighterRig {
   headPosition(): THREE.Vector3;
 }
 
-/** Maps the rig's abstract pose vocabulary onto the vendored KayKit clip names. */
-const POSE_CLIPS: Record<PoseName, string> = {
-  idle: 'Idle',
-  windup: 'Blocking',
-  attack: 'Unarmed_Melee_Attack_Punch_A',
-  guard: 'Block',
-  hurt: 'Hit_A',
-  ko: 'Death_A',
-  win: 'Cheer'
+/**
+ * Maps the rig's abstract pose vocabulary onto the vendored Quaternius clips.
+ *
+ * Poses with more than one clip **alternate** on each entry. Two punches and two
+ * hit reactions is the single cheapest thing that stops a long exchange looking
+ * like the same frame replayed: a fighter that answers every hit with the exact
+ * same flinch reads as a puppet, one that alternates head/chest reactions reads
+ * as taking a beating.
+ */
+const POSE_CLIPS: Record<PoseName, readonly string[]> = {
+  // Held on its last frame, so the neutral pose IS the guard-up boxing stance
+  // rather than a relaxed stand — `Idle_Loop` is kept vendored as the fallback.
+  idle: ['Punch_Enter'],
+  // `windup` fires at the start of every turn, so it is on screen more than any
+  // other pose. It re-asserts the same fists-up stance, just tenser (see
+  // POSE_TIME_SCALE) — an earlier pass used the rig's crouch here and it read as
+  // the fighter squatting down rather than loading up a punch.
+  windup: ['Punch_Enter'],
+  attack: ['Punch_Jab', 'Punch_Cross'],
+  // The crouch survives here: slipping under a punch is a real block, and unlike
+  // windup this only fires on an actual blocked hit, so it stays brief.
+  guard: ['Crouch_Idle_Loop'],
+  hurt: ['Hit_Head', 'Hit_Chest'],
+  ko: ['Death01'],
+  win: ['Dance_Loop']
 };
 
-/** K.O. holds its last frame instead of looping — every other pose loops. */
-const CLAMP_POSES: ReadonlySet<PoseName> = new Set(['ko']);
+/** Poses that hold their final frame instead of looping. */
+const CLAMP_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'idle', 'attack', 'hurt']);
 
-/** The vendored rigs are authored facing +Z; this turns them to face the opponent. */
-const FACING_OFFSET = Math.PI;
+/**
+ * Per-pose crossfade, in seconds. A punch has to snap or it reads as a shove;
+ * settling back to the guard can afford to breathe. One global blend time was
+ * the main reason the old rig felt floaty.
+ */
+const POSE_BLEND: Record<PoseName, number> = {
+  idle: 0.22,
+  windup: 0.14,
+  attack: 0.06,
+  guard: 0.12,
+  hurt: 0.05,
+  ko: 0.12,
+  win: 0.3
+};
+
+/**
+ * Per-pose playback rate. `idle` and `windup` share `Punch_Enter` — the rig has
+ * no separate "load up" clip — so tempo is what separates them: settling into
+ * the guard reads slower than snapping back into it before a strike.
+ */
+const POSE_TIME_SCALE: Record<PoseName, number> = {
+  idle: 0.85,
+  windup: 1.4,
+  attack: 1.15,
+  guard: 0.7,
+  hurt: 1.1,
+  ko: 1,
+  win: 1
+};
+
+/**
+ * The vendored rig is authored facing +Z (verified by rendering it at 0, ±PI/2
+ * and PI against a marker on the +X axis). A fighter must face its opponent
+ * across the X axis, so the base turn is a quarter turn: p1 (on the left, side
+ * -1) to +X, p2 to -X.
+ */
+const FACING_QUARTER = Math.PI / 2;
+
+/**
+ * ...but pure profile hides the guard and reads flat, so each fighter is turned
+ * back toward the camera by this much for the classic 3/4 fighting-game view.
+ */
+const FACING_CAMERA_BIAS = 0.3;
+
+/** Yaw that puts a fighter on `side` into a 3/4 stance facing its opponent. */
+function facingFor(side: -1 | 1): number {
+  return side * (FACING_CAMERA_BIAS - FACING_QUARTER);
+}
 
 /** World-unit height the streaming-text billboard floats above the head bone. */
 const BILLBOARD_HEAD_OFFSET = 0.5;
@@ -87,6 +149,35 @@ function findHeadBone(root: THREE.Object3D): THREE.Object3D | null {
   return exact ?? partial;
 }
 
+/**
+ * Finds the rig's striking hand, used to anchor the punch trail.
+ *
+ * Matched by suffix rather than equality: the vendored rig names its bones
+ * `DEF-hand.R` / `DEF-hand.L`, so an exact-name test silently falls through to
+ * the first bone merely *containing* "hand" — which is the LEFT one, and the
+ * punches are thrown with the right.
+ */
+function findHandBone(root: THREE.Object3D): THREE.Object3D | null {
+  let right: THREE.Object3D | null = null;
+  let any: THREE.Object3D | null = null;
+  root.traverse((obj) => {
+    if (!(obj as THREE.Bone).isBone) return;
+    const lower = obj.name.toLowerCase();
+    if (!lower.includes('hand')) return;
+    if (!right && (lower.endsWith('hand.r') || lower.endsWith('hand_r') || lower.endsWith('handr'))) {
+      right = obj;
+    } else if (!any) {
+      any = obj;
+    }
+  });
+  return right ?? any;
+}
+
+/** How many past fist positions the punch trail keeps. */
+const TRAIL_POINTS = 14;
+/** Seconds a trail segment takes to fade out once the punch stops moving. */
+const TRAIL_FADE_S = 0.22;
+
 const gltfLoader = new GLTFLoader();
 
 export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig {
@@ -96,34 +187,83 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
   const group = new THREE.Group();
   group.position.set(baseX, 0, 0);
-  group.scale.setScalar(character.modelScale);
+  // Height from `modelScale`, build from `bulk` — all four fighters share one
+  // mesh now, so width/depth is what keeps a heavyweight from reading exactly
+  // like a featherweight. The sprite below divides `modelScale` back out.
+  group.scale.set(
+    character.modelScale * character.bulk,
+    character.modelScale,
+    character.modelScale * character.bulk
+  );
 
   // Holds the loaded glTF scene once it arrives; rotated so the model (authored
   // facing +Z) faces across the arena toward the opponent.
   const model = new THREE.Group();
-  model.rotation.y = (side === 1 ? Math.PI : 0) + FACING_OFFSET;
+  model.rotation.y = facingFor(side);
   group.add(model);
 
   let mixer: THREE.AnimationMixer | null = null;
   const actions = new Map<string, THREE.AnimationAction>();
   let currentAction: THREE.AnimationAction | null = null;
   let headBone: THREE.Object3D | null = null;
+  let handBone: THREE.Object3D | null = null;
   const tintedMaterials: THREE.MeshStandardMaterial[] = [];
 
+  // --- punch trail --------------------------------------------------------
+  //
+  // A short ribbon of the striking fist's recent positions. It exists because a
+  // punch that lands in two frames is easy to miss entirely at 60fps — the
+  // streak is what makes the strike legible as a strike.
+  const trailPositions = new Float32Array(TRAIL_POINTS * 3);
+  const trailGeometry = new THREE.BufferGeometry();
+  trailGeometry.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+  const trailMaterial = new THREE.LineBasicMaterial({
+    color: profile.accent,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const trail = new THREE.Line(trailGeometry, trailMaterial);
+  trail.frustumCulled = false;
+  trail.visible = false;
+  group.add(trail);
+
+  let trailStrength = 0;
+  let trailPrimed = false;
+
   let pendingPose: PoseName = 'idle';
+  /** Rotates through each pose's clip list so repeats alternate instead of repeating. */
+  const variantCursor = new Map<PoseName, number>();
+
+  function clipFor(pose: PoseName): string | null {
+    const options = POSE_CLIPS[pose];
+    if (!options.length) return null;
+    // Only advance the cursor for poses that actually have a variant to reach.
+    if (options.length === 1) return options[0];
+    const next = (variantCursor.get(pose) ?? 0) % options.length;
+    variantCursor.set(pose, next + 1);
+    return options[next];
+  }
 
   function applyPose(pose: PoseName): void {
     if (!mixer) return;
-    const clipName = POSE_CLIPS[pose];
+    const clipName = clipFor(pose);
+    if (!clipName) return;
     const nextAction = actions.get(clipName);
     if (!nextAction) return; // this rig doesn't have the clip — keep whatever is playing
     const clamp = CLAMP_POSES.has(pose);
     nextAction.reset();
     nextAction.setLoop(clamp ? THREE.LoopOnce : THREE.LoopRepeat, Infinity);
     nextAction.clampWhenFinished = clamp;
+    nextAction.timeScale = POSE_TIME_SCALE[pose];
     nextAction.play();
     if (currentAction && currentAction !== nextAction) {
-      currentAction.crossFadeTo(nextAction, 0.2, false);
+      currentAction.crossFadeTo(nextAction, POSE_BLEND[pose], false);
+    } else if (currentAction === nextAction) {
+      // Re-triggering the pose that is already playing (jab, jab) — restart it
+      // from the top rather than letting the clamped action sit finished.
+      nextAction.fadeIn(POSE_BLEND[pose]);
     }
     currentAction = nextAction;
   }
@@ -154,6 +294,7 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
       model.add(scene);
       headBone = findHeadBone(scene);
+      handBone = findHandBone(scene);
 
       mixer = new THREE.AnimationMixer(scene);
       for (const clip of gltf.animations) {
@@ -189,7 +330,13 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   // child of `group`, which already carries that scale.
   const worldW = 2.15 * (screenW / 640);
   const worldH = 1.34 * (screenH / 400);
-  sprite.scale.set(worldW / character.modelScale, worldH / character.modelScale, 1);
+  // `group` carries a non-uniform scale (bulk on x/z, plain scale on y), so the
+  // billboard divides each axis back out or a heavyweight's text reads stretched.
+  sprite.scale.set(
+    worldW / (character.modelScale * character.bulk),
+    worldH / character.modelScale,
+    1
+  );
   // Fallback position (roughly head height) until the real head bone loads.
   sprite.position.set(0, 3.12 / character.modelScale, 0);
   group.add(sprite);
@@ -235,12 +382,18 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let charge = 0;
   let flashAmount = 0;
   const headWorld = new THREE.Vector3();
+  const handWorld = new THREE.Vector3();
 
   return {
     group,
 
     setPose(pose) {
       pendingPose = pose;
+      // Light the trail on the strike itself; every other pose lets it die out.
+      if (pose === 'attack') {
+        trailStrength = 1;
+        trailPrimed = false;
+      }
       applyPose(pose);
     },
 
@@ -268,6 +421,30 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
     update(dt, _elapsed) {
       if (mixer) mixer.update(dt);
+
+      // Punch trail: follow the fist while the strike is hot, then fade.
+      if (handBone && trailStrength > 0) {
+        handBone.getWorldPosition(handWorld);
+        group.worldToLocal(handWorld);
+        if (!trailPrimed) {
+          // First frame of a punch — collapse the ribbon onto the fist so it
+          // doesn't streak in from wherever the hand was last punch.
+          for (let i = 0; i < TRAIL_POINTS; i += 1) {
+            trailPositions.set([handWorld.x, handWorld.y, handWorld.z], i * 3);
+          }
+          trailPrimed = true;
+        } else {
+          trailPositions.copyWithin(3, 0, (TRAIL_POINTS - 1) * 3);
+          trailPositions.set([handWorld.x, handWorld.y, handWorld.z], 0);
+        }
+        trailGeometry.attributes.position.needsUpdate = true;
+        trailStrength = Math.max(0, trailStrength - dt / TRAIL_FADE_S);
+        trailMaterial.opacity = trailStrength * 0.9;
+        trail.visible = true;
+      } else if (trail.visible) {
+        trail.visible = false;
+        trailPrimed = false;
+      }
 
       if (headBone) {
         headBone.getWorldPosition(headWorld);

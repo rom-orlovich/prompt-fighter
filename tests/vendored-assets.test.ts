@@ -7,37 +7,75 @@ import { readGlb } from '../scripts/gltf-to-glb.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = join(__dirname, '..', 'public', 'assets', 'characters');
-const MODELS = ['Barbarian', 'Knight', 'Mage', 'Rogue'];
-const MAX_COMBINED_BYTES = 5 * 1024 * 1024;
-const EXPECTED_CLIPS = ['Idle', 'Blocking', 'Unarmed_Melee_Attack_Punch_A', 'Block', 'Hit_A', 'Death_A', 'Cheer'].sort();
+const RIG = 'Fighter';
+const MAX_BYTES = 5 * 1024 * 1024;
 
-describe('vendored character assets', () => {
-  it('ships exactly the four named KayKit character models', () => {
-    for (const model of MODELS) {
-      expect(() => statSync(join(ASSETS_DIR, `${model}.glb`)), `${model}.glb should exist`).not.toThrow();
-    }
+/** Must stay in sync with `KEEP_CLIPS` in scripts/vendor-characters.mjs. */
+const EXPECTED_CLIPS = [
+  'Punch_Enter',
+  'Punch_Jab',
+  'Punch_Cross',
+  'Crouch_Idle_Loop',
+  'Hit_Head',
+  'Hit_Chest',
+  'Death01',
+  'Dance_Loop',
+  'Idle_Loop',
+  'Walk_Loop'
+].sort();
+
+/** Every clip `POSE_CLIPS` in src/render/fighter.ts can ask the mixer for. */
+const POSE_CLIPS = [
+  'Punch_Enter',
+  'Crouch_Idle_Loop',
+  'Punch_Jab',
+  'Punch_Cross',
+  'Hit_Head',
+  'Hit_Chest',
+  'Death01',
+  'Dance_Loop'
+];
+
+function loadRig() {
+  const glb = readFileSync(join(ASSETS_DIR, `${RIG}.glb`));
+  return new Uint8Array(glb.buffer, glb.byteOffset, glb.byteLength);
+}
+
+describe('vendored fighter rig', () => {
+  it('ships the shared fighter rig', () => {
+    expect(() => statSync(join(ASSETS_DIR, `${RIG}.glb`)), `${RIG}.glb should exist`).not.toThrow();
   });
 
-  it('is structurally valid for every vendored character', () => {
-    for (const model of MODELS) {
-      const glb = readFileSync(join(ASSETS_DIR, `${model}.glb`));
-      const result = validateGlbStructure(new Uint8Array(glb.buffer, glb.byteOffset, glb.byteLength));
-      expect(result.errors, `${model}.glb structural errors`).toEqual([]);
-      expect(result.valid, model).toBe(true);
-    }
+  it('is structurally valid', () => {
+    // Deliberately not a size assertion: a trimmed GLB that still carries
+    // dangling accessor -> bufferView references has a perfectly plausible
+    // size and still fails to load.
+    const { valid, errors } = validateGlbStructure(loadRig());
+    expect(errors, `${RIG}.glb structural errors`).toEqual([]);
+    expect(valid).toBe(true);
   });
 
-  it('keeps the combined vendored payload under 5MB', () => {
-    const total = MODELS.reduce((sum, model) => sum + statSync(join(ASSETS_DIR, `${model}.glb`)).size, 0);
-    expect(total, `combined bytes: ${total}`).toBeLessThan(MAX_COMBINED_BYTES);
+  it('stays inside the payload budget', () => {
+    const size = statSync(join(ASSETS_DIR, `${RIG}.glb`)).size;
+    expect(size, `bytes: ${size}`).toBeLessThan(MAX_BYTES);
+    expect(size, 'a truncated rig would be suspiciously small').toBeGreaterThan(100_000);
   });
 
-  it('every vendored file keeps only the 7 pose-mapped animation clips', () => {
-    for (const model of MODELS) {
-      const glb = readFileSync(join(ASSETS_DIR, `${model}.glb`));
-      const { json } = readGlb(new Uint8Array(glb.buffer, glb.byteOffset, glb.byteLength));
-      const names = (json.animations ?? []).map((a: { name: string }) => a.name).sort();
-      expect(names, model).toEqual(EXPECTED_CLIPS);
+  it('keeps exactly the vendored clip set', () => {
+    const names = (readGlb(loadRig()).json.animations ?? [])
+      .map((a: { name: string }) => a.name)
+      .sort();
+    expect(names).toEqual(EXPECTED_CLIPS);
+  });
+
+  it('carries every clip the pose map can ask for', () => {
+    // Guards the failure mode where a pose silently falls through to "keep
+    // whatever is playing" because its clip was trimmed away.
+    const names = new Set(
+      (readGlb(loadRig()).json.animations ?? []).map((a: { name: string }) => a.name)
+    );
+    for (const clip of POSE_CLIPS) {
+      expect(names.has(clip), `pose map needs ${clip}`).toBe(true);
     }
   });
 });

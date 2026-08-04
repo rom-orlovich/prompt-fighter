@@ -22,8 +22,8 @@ pick from:
 ## 2. The roster
 
 Defined in `src/fighters.ts` (`ROSTER`). Four fighters, each with a display name, a brand
-color pair (used for lighting, rim glow and — once the KayKit models land — material
-tinting), a tagline, and a super-move name:
+color pair (used for lighting, rim glow and, on the vendored rig, material tinting), a
+tagline, and a super-move name:
 
 | Fighter | Tagline | Super name |
 |---|---|---|
@@ -93,30 +93,58 @@ licensing question the original design was protecting against.
 
 ### Source
 
-**KayKit Adventurers** by Kay Lousberg — a free, **CC0-licensed** (public domain, no
-attribution required) low-poly character pack, distributed at
-`https://kaylousberg.itch.io/kaykit-adventurers`. CC0 is the same license class the
-2026-08-03 spec's "asset policy is scoped, not asset-free" note already anticipated: no
-proprietary assets, no attribution-required assets, nothing that reopens a licensing
-question for a public MIT-licensed repo.
+**Quaternius Universal Animation Library** — a free, **CC0-licensed** (public domain, no
+attribution required) realistically-proportioned humanoid shipped together with 46 clips
+on its own skeleton. Vendored from the glTF mirror at
+`https://github.com/J-Ponzo/gltf-universal-animation-library`
+(upstream: `https://quaternius.itch.io/universal-animation-library`). CC0 is the same
+license class the 2026-08-03 spec's "asset policy is scoped, not asset-free" note already
+anticipated: no proprietary assets, no attribution-required assets, nothing that reopens a
+licensing question for a public MIT-licensed repo.
 
-### Fighter → model → scale
+#### Why this replaced KayKit Adventurers
 
-Each fighter is assigned one of the pack's pre-rigged character classes, matched to its
-existing silhouette/personality from `roster/visuals.ts`.
+The roster first shipped on **KayKit Adventurers** (also CC0, also cleanly rigged, four
+genuinely distinct characters). It was replaced because it lost the brief: KayKit's
+adventurers are chibi fantasy characters — roughly three heads tall, in wizard hats and
+knight helmets — and the game is meant to read as a grounded fistfight. Rendering both
+packs side by side at matched arena height made it unarguable.
 
-The vendored models are **not** all the same height on their own — they range from 2.37 to
-2.98 world units in the Idle pose — so a shared scale factor would render them at wildly
-different on-screen sizes. `CharacterSpec` therefore records each model's measured
-`modelHeight` alongside its `modelScale`, and `arenaHeight(spec)` (their product) is the
-number that actually has to land in the band the camera is framed for:
+The swap buys two things and costs one:
 
-| Fighter | KayKit model | Why this model | `modelHeight` | `modelScale` | Arena height |
-|---|---|---|---|---|---|
-| `CLAUDE` | Mage | round, contemplative, "nuance specialist" reads as the careful spellcaster, not the brawler | 2.976 | 1.09 | 3.24 |
-| `CODEX` | Knight | "ships with confidence" — armored, plants itself and swings first | 2.44 | 1.39 | 3.39 |
-| `GEMINI` | Barbarian | hulking and imposing — "overwhelms the arena with sheer context" | 2.371 | 1.54 | 3.65 |
-| `LOCAL 7B` | Rogue | small, quick, "fast and shallow" — the lightest and quickest-reading rig in the pack | 2.585 | 1.14 | 2.95 |
+- **Proportions.** ~7 heads instead of ~3, no fantasy silhouette.
+- **A real boxing vocabulary.** KayKit offered one generic `Unarmed_Melee_Attack_Punch_A`.
+  This rig has `Punch_Enter` (raise the guard), `Punch_Jab`, `Punch_Cross`, and two
+  separate hit reactions (`Hit_Head`, `Hit_Chest`) — enough to alternate strikes and
+  flinches instead of replaying one frame.
+- **Cost: per-fighter character identity.** KayKit gave four *different characters*; this
+  is one mesh worn by all four. Distinctness now comes from brand tint, `modelScale` and
+  `bulk` (see the table below) — a heavyweight still reads apart from a featherweight, but
+  they are no longer different characters.
+
+The obvious way to buy that identity back is Quaternius's *Universal Base Characters* pack
+(same skeleton, so the clips retarget for free), whose free tier ships 2 of its 8 base
+bodies. It was not taken here: it sits behind a 122MB interactive download and would add a
+cross-file mesh/skeleton pairing step, which is exactly the class of change that breaks
+quietly. Worth revisiting if per-fighter bodies become the priority.
+
+### Fighter → build
+
+All four fighters wear the same rig (natural height 1.83 world units), so the spec's job is
+no longer picking a model — it is making one mesh read as four contenders. Each gets its
+own brand tint, its own `modelScale` (height) and its own `bulk` (width/depth):
+
+| Fighter | Build | `modelScale` | `bulk` | Arena height |
+|---|---|---|---|---|
+| `CLAUDE` | lean, deliberate counter-puncher | 1.78 | 0.97 | 3.26 |
+| `CODEX` | front-foot brawler, commits to every swing | 1.86 | 1.10 | 3.40 |
+| `GEMINI` | hulking heavyweight, overwhelming reach | 2.00 | 1.15 | 3.66 |
+| `LOCAL 7B` | compact featherweight, fast hands | 1.61 | 0.90 | 2.95 |
+
+`bulk` is deliberately mild (0.9–1.15). A skinned humanoid stretched much past that stops
+reading as heavyset and starts reading as broken, so the range is asserted in
+`tests/characters.test.ts` rather than left to taste. `arenaHeight(spec)` — height times
+scale — is the number that has to land in the band the camera frames.
 
 Arena height is deliberately kept distinct per fighter for the same reason
 `FIGHTER_VISUALS.scale` was distinct before: silhouette variety is part of how the game
@@ -131,30 +159,43 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
 
 ### Loading and animation
 
-- Models load through Three.js's `GLTFLoader`, as `.glb` (binary glTF) — one HTTP request
-  per fighter, no separate `.bin`/texture fetches.
-- Animation runs through Three.js's `AnimationMixer` against clips baked into each rig.
-  `render/fighter.ts` keeps the exact `PoseName` vocabulary the procedural rig exposed, so
-  `main.ts`, `combat.ts` and the HUD never learn whether a build is running the procedural
-  rig or a KayKit one. The mapping — and the full set of clips the trimmer keeps — is:
+- The rig loads through Three.js's `GLTFLoader` as one `.glb` — a single request shared by
+  every fighter, no separate `.bin`/texture fetches.
+- Animation runs through `AnimationMixer`. `render/fighter.ts` keeps the exact `PoseName`
+  vocabulary the procedural rig exposed, so `main.ts`, `combat.ts` and the HUD never learn
+  which rig backend is active. Poses with two clips **alternate on each entry**:
 
-  | Pose | KayKit clip |
-  |---|---|
-  | `idle` | `Idle` |
-  | `windup` | `Blocking` |
-  | `attack` | `Unarmed_Melee_Attack_Punch_A` |
-  | `guard` | `Block` |
-  | `hurt` | `Hit_A` |
-  | `ko` | `Death_A` (LoopOnce + `clampWhenFinished`, so a K.O. holds its last frame) |
-  | `win` | `Cheer` |
+  | Pose | Clip(s) | Notes |
+  |---|---|---|
+  | `idle` | `Punch_Enter` | LoopOnce + clamped, so the neutral pose *is* the guard-up stance |
+  | `windup` | `Punch_Enter` | same clip, `timeScale` 1.4 — snapping back into guard, not settling |
+  | `attack` | `Punch_Jab` → `Punch_Cross` | alternates, so a long exchange isn't one frame replayed |
+  | `guard` | `Crouch_Idle_Loop` | slipping under a punch; only fires on an actual block |
+  | `hurt` | `Hit_Head` → `Hit_Chest` | alternates — a fighter that always flinches identically reads as a puppet |
+  | `ko` | `Death01` | LoopOnce + clamped, holds the last frame |
+  | `win` | `Dance_Loop` | |
 
-  The pack ships genuine **unarmed** melee clips, which is what makes a fistfight read as a
-  fistfight rather than a weapon-swing animation played without a weapon.
-- Brand color is applied via **material tinting**, not geometry swap or texture swap: the
-  stock KayKit materials are recolored to the fighter's brand hue with an emissive rim,
-  the same way the procedural rig's `color`/`accent`/`trim` fields worked. One rig per
-  fighter serves every model — there's no separate texture asset per brand color to
-  vendor or maintain.
+  Blend time is **per pose** (`POSE_BLEND`), not one global value: a punch crossfades in
+  0.06s or it reads as a shove, while settling back to guard takes 0.22s. A single shared
+  blend time was the main reason the first pass felt floaty.
+
+  An earlier pass mapped `windup` to the rig's crouch. Because `windup` fires at the start
+  of *every* turn it is the most-visible pose in the match, and it read as the fighter
+  squatting rather than loading up — hence the crouch being demoted to `guard` only.
+- Brand color is applied via **material tinting**, not geometry or texture swap: the stock
+  materials are cloned per fighter and recolored to the brand hue with an emissive rim, the
+  same way the procedural rig's `color`/`accent`/`trim` fields worked. One shared mesh
+  serves all four fighters — no per-brand texture asset to vendor or maintain.
+- **Facing.** The rig is authored facing `+Z` (verified by rendering it at 0, ±π/2 and π
+  against a marker on the `+X` axis). `facingFor(side)` turns each fighter a quarter turn
+  toward its opponent, then back toward the camera by `0.3` rad for the classic 3/4
+  fighting-game view. The inherited constant was a half turn, which put p1's back to the
+  camera and left p2 facing straight out of the screen.
+- **Punch trail.** `fighter.ts` streaks a short additive ribbon along the striking hand's
+  last 14 positions while a strike is hot, fading over 0.22s. At 60fps a punch can land
+  inside two frames; the streak is what makes it legible as a strike. The hand bone is
+  matched by *suffix* (`DEF-hand.R`) — an exact-name match silently fell through to the
+  first bone merely containing "hand", which is the left one.
 - The CRT/terminal streaming-text billboard survives unchanged in spirit: a
   canvas-textured plane that renders the model's actual streaming reply with a blinking
   cursor. It stops being the fighter's *head* (there is now a real head bone) and becomes
@@ -162,15 +203,16 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
 
 ### Trim-for-size pipeline
 
-The pack publishes each character as a ready-made `.glb` under `Characters/gltf/`, so no
-`.gltf` + `.bin` packing step is needed. What *is* needed is a trim: each source file is
-~3.6MB, and **1.33MB of that is 76 animation clips** covering swordplay, archery, spell-
-casting, sitting, jumping and more. This game plays exactly seven of them.
+The library ships as a `.gltf` + `.bin` pair carrying 46 clips — driving, swimming, pistol
+handling, sitting, farming — of which this game plays eight. `scripts/gltf-to-glb.mjs`
+(`packGltfToGlb`) first inlines the pair into a single GLB and drops every image/texture
+reference (each material here is a flat brand tint, so the atlas is dead weight), then the
+trimmer removes the clips the pose map never asks for.
 
 `scripts/trim-glb.mjs` (`trimGlb`) is a zero-dependency GLB trimmer that keeps only the
 clips in the pose map and then garbage-collects everything they orphan:
 
-1. Filter `animations` down to the seven kept clips.
+1. Filter `animations` down to the kept clips.
 2. Walk what is still referenced — mesh primitive attributes, indices and morph targets,
    `skin.inverseBindMatrices`, and the samplers of the *kept* animations only.
 3. Collect the `bufferViews` those accessors need (including `accessor.sparse`), plus any
@@ -187,19 +229,14 @@ it still fails to load. That is why `scripts/validate-glb.mjs` exists and why
 `tests/vendored-assets.test.ts` asserts structural validity rather than byte size — a
 size-only check passes on a corrupt model.
 
-`scripts/vendor-characters.mjs` drives the whole pipeline (download → trim → validate →
-write), refuses to emit a model that fails validation or keeps the wrong clips, and fails
-outright if the combined payload would exceed the 5MB budget.
+`scripts/vendor-characters.mjs` drives the whole pipeline (download → pack → trim →
+validate → write), refuses to emit a rig that fails validation or keeps the wrong clips,
+and fails outright if the payload would exceed the 5MB budget.
 
-The result is a self-contained `.glb` per fighter under `public/assets/characters/`:
-
-| Model | Source | Vendored | Saving |
-|---|---|---|---|
-| Barbarian | 3.61MB | 0.62MB | −83.0% |
-| Knight | 3.66MB | 0.66MB | −81.9% |
-| Mage | 3.59MB | 0.59MB | −83.5% |
-| Rogue | 3.62MB | 0.62MB | −82.9% |
-| **Total** | **14.48MB** | **2.49MB** | **−82.8%** |
+The result is one self-contained `public/assets/characters/Fighter.glb`: **3.23MB packed →
+1.10MB vendored (−66%)**, 10 clips, shared by all four fighters. For comparison the
+four-model KayKit roster it replaced cost 2.49MB, so the realism upgrade also more than
+halved the payload.
 
 This keeps the "clone stays small" property of the original procedural design intact even
 though the geometry is no longer procedural.
@@ -258,15 +295,17 @@ gap to close later:**
 
 Same discipline as the rest of `engine/`: `abilities.ts` and `selection.ts` are pure
 functions, unit-tested table-driven under `vitest` with no DOM and no Three.js. The
-character-select screen and the KayKit rig loading are verified by running the game (per
+character-select screen and the rig loading are verified by running the game (per
 the existing "Rendering is verified by running the game, not by unit tests" rule from the
 2026-08-03 spec), with `tests/characters.test.ts` covering the pure data layer
 (`roster/characters.ts`'s fighter → model → scale/skin mapping) the same way
 `roster/visuals.ts` was already covered before this doc.
 
-The vendored assets themselves are covered by `tests/vendored-assets.test.ts`: all four
-models present, **structurally valid** (every accessor/bufferView/sampler/node reference
-resolves), exactly the seven pose-mapped clips, and a combined payload under 5MB.
+The vendored rig is covered by `tests/vendored-assets.test.ts`: present, **structurally
+valid** (every accessor/bufferView/sampler/node reference resolves), exactly the vendored
+clip set, inside the payload budget, and — importantly — carrying *every* clip the pose map
+can ask for, which guards the failure mode where a pose silently falls through to "keep
+whatever is playing" because its clip was trimmed away.
 
 ### Recording the demo needs a real GPU
 
