@@ -212,7 +212,10 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
 - Brand color is applied via **material tinting**, not geometry or texture swap: the stock
   materials are cloned per fighter and recolored to the brand hue with an emissive rim, the
   same way the procedural rig's `color`/`accent`/`trim` fields worked. One shared mesh
-  serves all four fighters — no per-brand texture asset to vendor or maintain.
+  serves all four fighters — no per-brand texture asset to vendor or maintain. (G15 restored
+  the body's *surface* maps — normal and metallic-roughness — so the tint sits on real form
+  instead of flat plastic; see "Trim-for-size pipeline" below for what does and does not
+  survive vendoring.)
 - **Facing.** The rig is authored facing `+Z` (verified by rendering it at 0, ±π/2 and π
   against a marker on the `+X` axis). `facingFor(side)` turns each fighter a quarter turn
   toward its opponent, then back toward the camera by `0.3` rad for the classic 3/4
@@ -245,9 +248,40 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
 
 The library ships as a `.gltf` + `.bin` pair carrying 46 clips — driving, swimming, pistol
 handling, sitting, farming — of which this game plays eight. `scripts/gltf-to-glb.mjs`
-(`packGltfToGlb`) first inlines the pair into a single GLB and drops every image/texture
-reference (each material here is a flat brand tint, so the atlas is dead weight), then the
-trimmer removes the clips the pose map never asks for.
+(`packGltfToGlb`) first inlines the pair into a single GLB and, by default, drops every
+image/texture reference (most materials here — hair, eyes, the anim library — are a flat
+brand tint or never rendered, so their atlas is dead weight), then the trimmer removes the
+clips the pose map never asks for.
+
+**Body surface detail (G15).** The two body meshes are the one exception: they render as
+flat, solid-colour mannequins if fully stripped, because the vendor pack's normal and
+roughness maps are what give a brand-tinted material any surface form — muscle definition
+catching the arena lights, skin that is not uniformly glossy. `packGltfToGlb` grew an opt-in
+`keepTextureSlots` + `resolveImageBytes` pair so a caller can selectively SURVIVE specific
+material texture slots instead of stripping everything; every other caller (hairstyles, the
+animation library) still passes no options and gets the original strip-everything behavior,
+covered by `tests/gltf-to-glb.test.ts`.
+
+`scripts/vendor-characters.mjs`'s `packBodyGlb` uses this for the two bodies only:
+- Keeps `normalTexture` and `pbrMetallicRoughness.metallicRoughnessTexture` (roughness lives
+  in that texture's G channel; `metallicFactor: 0` on the source material means the same
+  texture's B channel, read as metalness, is always zeroed — the map is safe to reuse as-is).
+- Explicitly does **not** keep `baseColorTexture` — restoring it would make all four fighters
+  the same skin-toned human and erase the brand-colour identity `tests/characters.test.ts`
+  asserts (`ROSTER[name].color`) and the select screen / health bars are keyed to. Stripping
+  it also resets `baseColorFactor` to `[1,1,1,1]`, so `fighter.ts`'s `tint()` multiplying in
+  the brand hue via `material.color` is the only colour information left — a flat, readable
+  brand tint sitting on real geometric/specular detail instead of painted plastic.
+  `tint()` no longer nulls out `map` at runtime for this reason: there is nothing left to
+  null (no base-colour map survives vendoring) and doing so used to read as though it also
+  discarded the normal/roughness maps it must NOT touch.
+- Downscales both source maps (raw normal+roughness for both bodies is ~14MB against a 6MB
+  combined budget) to 512×512 with ImageMagick (`-strip -define png:compression-level=9`)
+  before handing the bytes to `packGltfToGlb`, which embeds them as bufferView-backed images
+  appended after the mesh binary — still one self-contained `.glb` per body, no sidecar
+  image files. Measured: ~848KB combined for all four maps (both bodies' normal + roughness),
+  bringing the combined vendored payload from ~4.33MB to ~5.19MB — under the existing 6MB
+  ceiling in `tests/vendored-assets.test.ts` without raising it.
 
 `scripts/trim-glb.mjs` (`trimGlb`) is a zero-dependency GLB trimmer that keeps only the
 clips in the pose map and then garbage-collects everything they orphan:

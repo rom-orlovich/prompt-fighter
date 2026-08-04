@@ -37,9 +37,11 @@
  * Deterministic: unchanged inputs produce byte-identical output.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { packGltfToGlb, readGlb } from './gltf-to-glb.mjs';
 import { trimGlb } from './trim-glb.mjs';
@@ -78,6 +80,17 @@ export const KEEP_CLIPS = [
 
 const MAX_COMBINED_BYTES = 6 * 1024 * 1024;
 
+/**
+ * Downscale target for the body normal/roughness maps (G15). Source maps are
+ * ~1.3k-2k px and ~3-4MB EACH; raw normal+roughness for both bodies is ~14MB
+ * against a 6MB total budget, so shipping them untouched is impossible.
+ * 512x512 keeps visible muscle definition and non-uniform specular while the
+ * combined vendored payload stays comfortably under budget (measured: ~848KB
+ * for all four body maps combined, vs. the ~2.5MB+ of headroom the current
+ * 4.33MB non-body payload leaves under the 6MB ceiling).
+ */
+const BODY_TEXTURE_RESOLUTION = 512;
+
 function arg(name) {
   const i = process.argv.indexOf(name);
   return i === -1 ? null : process.argv[i + 1];
@@ -88,6 +101,58 @@ function packPair(dir, name, outName) {
   const gltf = JSON.parse(readFileSync(join(dir, `${name}.gltf`), 'utf8'));
   const bin = new Uint8Array(readFileSync(join(dir, `${name}.bin`)));
   const glb = packGltfToGlb(gltf, bin);
+  const { valid, errors } = validateGlbStructure(glb);
+  if (!valid) throw new Error(`${outName}: failed structural validation: ${errors.join('; ')}`);
+  writeFileSync(join(OUT_DIR, outName), glb);
+  return glb.byteLength;
+}
+
+/** Downscales a source PNG with ImageMagick and returns its bytes. */
+function downscalePng(srcPath) {
+  const outPath = join(tmpdir(), `vendor-tex-${process.pid}-${Math.random().toString(36).slice(2)}.png`);
+  execFileSync('convert', [
+    srcPath,
+    '-strip',
+    '-resize',
+    `${BODY_TEXTURE_RESOLUTION}x${BODY_TEXTURE_RESOLUTION}`,
+    '-define',
+    'png:compression-level=9',
+    '-define',
+    'png:compression-filter=5',
+    outPath
+  ]);
+  try {
+    return new Uint8Array(readFileSync(outPath));
+  } finally {
+    rmSync(outPath, { force: true });
+  }
+}
+
+/**
+ * Packs a body `.gltf` + `.bin` pair, restoring ONLY its normal and
+ * metallic-roughness maps (downscaled) so the fighter reads as a real body
+ * under lighting while `fighter.ts`'s brand-colour tint stays a flat colour
+ * (base-colour texture stays stripped on purpose — see G15 done-marker).
+ * The same source gltf also carries stub hair/eye materials; their maps are
+ * deliberately left stripped, so only the two body-named textures are kept.
+ */
+function packBodyGlb(dir, name, outName, body) {
+  const gltf = JSON.parse(readFileSync(join(dir, `${name}.gltf`), 'utf8'));
+  const bin = new Uint8Array(readFileSync(join(dir, `${name}.bin`)));
+
+  const allowedUris = new Set([`T_Superhero_${body}_Normal.png`, `T_Superhero_${body}_Roughness.png`]);
+  const downscaledByUri = new Map();
+
+  const glb = packGltfToGlb(gltf, bin, {
+    keepTextureSlots: new Set(['normalTexture', 'metallicRoughnessTexture']),
+    resolveImageBytes: (image) => {
+      if (!image.uri || !allowedUris.has(image.uri)) return undefined;
+      if (!downscaledByUri.has(image.uri)) {
+        downscaledByUri.set(image.uri, downscalePng(join(dir, image.uri)));
+      }
+      return downscaledByUri.get(image.uri);
+    }
+  });
   const { valid, errors } = validateGlbStructure(glb);
   if (!valid) throw new Error(`${outName}: failed structural validation: ${errors.join('; ')}`);
   writeFileSync(join(OUT_DIR, outName), glb);
@@ -112,7 +177,7 @@ function main() {
   let combined = 0;
 
   for (const body of BODIES) {
-    const bytes = packPair(bodySrc, `Superhero_${body}_FullBody`, `${body}.glb`);
+    const bytes = packBodyGlb(bodySrc, `Superhero_${body}_FullBody`, `${body}.glb`, body);
     combined += bytes;
     console.log(`${`${body}.glb`.padEnd(24)} ${(bytes / 1e6).toFixed(2)}MB`);
   }

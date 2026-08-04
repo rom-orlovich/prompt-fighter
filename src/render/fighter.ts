@@ -459,9 +459,12 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     const cloned = materials.map((material) => {
       const clone = (material as THREE.MeshStandardMaterial).clone();
       clone.color.setHex(color);
-      // The packed bodies ship untextured (the vendor step strips the atlas), so
-      // a leftover map would just multiply the tint toward black.
-      clone.map = null;
+      // The vendor step (G15) never embeds a base-colour map for the body — only
+      // its normal and roughness maps survive, so `map` is already null and the
+      // brand tint above stays a flat, readable colour. Do NOT null `normalMap`/
+      // `roughnessMap`/`metalnessMap` here: those are what give the tinted body
+      // real surface form (muscle definition, non-uniform specular) instead of
+      // reading as painted plastic.
       if ('emissive' in clone && emissive) {
         (clone as THREE.MeshStandardMaterial).emissive.setHex(color);
         (clone as THREE.MeshStandardMaterial).emissiveIntensity = BASE_EMISSIVE_INTENSITY;

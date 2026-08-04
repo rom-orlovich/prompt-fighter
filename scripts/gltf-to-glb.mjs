@@ -1,11 +1,22 @@
 // Zero-dependency glTF (.gltf + .bin) -> glTF-2.0 GLB packer.
 //
-// Strips every image/texture/sampler reference (this project only ever uses flat,
-// untextured PBR materials), drops secondary UV sets (TEXCOORD_1..n) and vertex-colour
-// attributes (COLOR_n) that would otherwise tint a flat material, inlines the .bin
-// payload as the document's single unnamed buffer, and emits a 4-byte-aligned binary
-// glTF container per the glTF-2.0 GLB spec:
+// By default strips every image/texture/sampler reference (most vendored assets in
+// this project use flat, brand-tinted materials with no surface maps), drops
+// secondary UV sets (TEXCOORD_1..n) and vertex-colour attributes (COLOR_n) that
+// would otherwise tint a flat material, inlines the .bin payload as the document's
+// single unnamed buffer, and emits a 4-byte-aligned binary glTF container per the
+// glTF-2.0 GLB spec:
 // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#glb-file-format-specification
+//
+// `opts.keepTextureSlots` (a Set of material texture-slot names: 'normalTexture',
+// 'occlusionTexture', 'emissiveTexture', 'baseColorTexture', 'metallicRoughnessTexture')
+// plus `opts.resolveImageBytes(image, imageIndex) => Uint8Array | undefined` lets a
+// caller selectively SURVIVE specific slots — e.g. keep the normal and
+// metallic-roughness maps for surface detail while still stripping the base-colour
+// map so a brand tint stays a flat, readable colour. Surviving images are embedded
+// as bufferView-backed images appended after the mesh binary, so the output is
+// still a single self-contained GLB. Every other slot, and every slot when
+// `resolveImageBytes` returns nothing for it, is stripped exactly as before.
 
 const GLB_MAGIC = 0x46546c67; // "glTF"
 const GLB_VERSION = 2;
@@ -15,27 +26,67 @@ const GLB_HEADER_LENGTH = 12;
 const CHUNK_HEADER_LENGTH = 8;
 
 /**
+ * Material texture-slot descriptors: where each slot lives on a material, and the
+ * key used to look it up in `opts.keepTextureSlots`.
+ */
+const TEXTURE_SLOTS = [
+  { holder: (material) => material, key: 'normalTexture' },
+  { holder: (material) => material, key: 'occlusionTexture' },
+  { holder: (material) => material, key: 'emissiveTexture' },
+  { holder: (material) => (material.pbrMetallicRoughness ??= {}), key: 'baseColorTexture' },
+  { holder: (material) => (material.pbrMetallicRoughness ??= {}), key: 'metallicRoughnessTexture' }
+];
+
+/**
  * @param {Record<string, unknown>} gltf
  * @param {Uint8Array} bin
+ * @param {{
+ *   keepTextureSlots?: Set<string>,
+ *   resolveImageBytes?: (image: Record<string, unknown>, imageIndex: number) => Uint8Array | undefined
+ * }} [opts]
  * @returns {Uint8Array}
  */
-export function packGltfToGlb(gltf, bin) {
+export function packGltfToGlb(gltf, bin, opts = {}) {
   const doc = deepClone(gltf);
+  const keepTextureSlots = opts.keepTextureSlots ?? new Set();
+  const resolveImageBytes = opts.resolveImageBytes;
 
-  // Drop every image/texture/sampler — this pipeline ships flat, untextured materials.
+  const sourceImages = gltf.images ?? [];
+  const sourceTextures = gltf.textures ?? [];
+
+  /** sourceImageIndex -> {bytes, mimeType} for every slot selected for retention. */
+  const keptImages = new Map();
+  /** texRefs (on the cloned doc) still pointing at an old texture index, to fix up once the new arrays exist. */
+  const pendingRemap = [];
+
+  for (const material of doc.materials ?? []) {
+    for (const { holder, key } of TEXTURE_SLOTS) {
+      const container = holder(material);
+      const texRef = container[key];
+      if (!texRef || texRef.index === undefined) continue;
+
+      const sourceImageIndex = sourceTextures[texRef.index]?.source;
+      const sourceImage = sourceImageIndex === undefined ? undefined : sourceImages[sourceImageIndex];
+      const bytes =
+        keepTextureSlots.has(key) && sourceImage && resolveImageBytes
+          ? resolveImageBytes(sourceImage, sourceImageIndex)
+          : undefined;
+
+      if (bytes) {
+        keptImages.set(sourceImageIndex, { bytes, mimeType: sourceImage.mimeType ?? 'image/png' });
+        pendingRemap.push({ texRef, sourceImageIndex });
+      } else {
+        delete container[key];
+      }
+    }
+    const pbr = (material.pbrMetallicRoughness ??= {});
+    if (!pbr.baseColorTexture) pbr.baseColorFactor ??= [1, 1, 1, 1];
+  }
+
+  // Every image/texture/sampler reference not explicitly kept above is gone.
   delete doc.images;
   delete doc.textures;
   delete doc.samplers;
-
-  for (const material of doc.materials ?? []) {
-    delete material.normalTexture;
-    delete material.occlusionTexture;
-    delete material.emissiveTexture;
-    const pbr = (material.pbrMetallicRoughness ??= {});
-    delete pbr.baseColorTexture;
-    delete pbr.metallicRoughnessTexture;
-    pbr.baseColorFactor ??= [1, 1, 1, 1];
-  }
 
   for (const mesh of doc.meshes ?? []) {
     for (const primitive of mesh.primitives ?? []) {
@@ -47,11 +98,51 @@ export function packGltfToGlb(gltf, bin) {
     }
   }
 
+  // Append any kept images after the mesh binary as bufferView-backed images, so
+  // the GLB stays one self-contained file.
+  const binParts = [bin];
+  let cursor = bin.length;
+
+  if (keptImages.size > 0) {
+    const orderedSourceIndices = [...keptImages.keys()].sort((a, b) => a - b);
+    const textureIndexBySourceImage = new Map();
+    doc.images = [];
+    doc.textures = [];
+    doc.samplers = [{ magFilter: 9729, minFilter: 9987, wrapS: 10497, wrapT: 10497 }];
+    doc.bufferViews = [...(doc.bufferViews ?? [])];
+
+    for (const sourceImageIndex of orderedSourceIndices) {
+      const { bytes, mimeType } = keptImages.get(sourceImageIndex);
+      const padding = (4 - (cursor % 4)) % 4;
+      if (padding > 0) {
+        binParts.push(new Uint8Array(padding));
+        cursor += padding;
+      }
+      const byteOffset = cursor;
+      binParts.push(bytes);
+      cursor += bytes.length;
+
+      const bufferViewIndex = doc.bufferViews.length;
+      doc.bufferViews.push({ buffer: 0, byteOffset, byteLength: bytes.length });
+
+      const imageIndex = doc.images.length;
+      doc.images.push({ mimeType, bufferView: bufferViewIndex });
+      doc.textures.push({ sampler: 0, source: imageIndex });
+      textureIndexBySourceImage.set(sourceImageIndex, doc.textures.length - 1);
+    }
+
+    for (const { texRef, sourceImageIndex } of pendingRemap) {
+      texRef.index = textureIndexBySourceImage.get(sourceImageIndex);
+    }
+  }
+
+  const combinedBin = binParts.length === 1 ? binParts[0] : concatBytes(binParts);
+
   // Inline the .bin payload as the single unnamed (GLB-embedded) buffer.
-  doc.buffers = [{ byteLength: bin.length }];
+  doc.buffers = [{ byteLength: combinedBin.length }];
 
   const jsonChunk = padChunk(Buffer.from(JSON.stringify(doc), 'utf8'), 0x20);
-  const binChunk = padChunk(Buffer.from(bin), 0x00);
+  const binChunk = padChunk(Buffer.from(combinedBin), 0x00);
 
   const totalLength =
     GLB_HEADER_LENGTH +
@@ -131,6 +222,18 @@ export function readGlb(glb) {
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+/** @param {Uint8Array[]} parts @returns {Uint8Array} */
+function concatBytes(parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
 }
 
 function padChunk(buf, padByte) {

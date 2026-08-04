@@ -27,7 +27,28 @@ interface Flash {
   maxLife: number;
   startScale: number;
   endScale: number;
+  /** Opacity at life=0, faded to 0 by maxLife — see `spawnFlash`. */
+  peakOpacity: number;
 }
+
+/**
+ * Above this world-unit radius, extra requested radius buys almost no extra
+ * ball size and trades directly into LESS peak opacity instead. Streak 4-5
+ * hits/counters/supers were requesting radii up to ~4.8 — a near-opaque white
+ * sphere that size fully occludes both fighters' upper bodies for the flash's
+ * whole lifetime, which defeats G15's restored surface detail as thoroughly
+ * as a flat mannequin did. Measured against a real match: at streak 4+ the
+ * ball must stay small enough, and thin enough, that both fighters read
+ * through it — an escalating combo still has to feel bigger, which is why the
+ * ball keeps growing (asymptotically) and the burst/shake/hitstop escalation
+ * elsewhere is untouched; this only stops the flash sphere specifically from
+ * becoming an opaque wall.
+ */
+const FLASH_BLOWOUT_RADIUS = 0.75;
+/** Hard ceiling the flash ball asymptotically approaches — never grows past ~this size no matter the streak. */
+const FLASH_MAX_RADIUS = 1.0;
+/** Floor for peak opacity — even the biggest combo flash stays at least this translucent. */
+const FLASH_MIN_OPACITY = 0.3;
 
 /**
  * Default particle size for an impact burst.
@@ -252,20 +273,40 @@ export function createFx(stage: Stage, layer: HTMLElement): Fx {
   }
 
   function spawnFlash(position: THREE.Vector3, color: number, radius: number): void {
+    // Past FLASH_BLOWOUT_RADIUS, the ball's growth eases toward FLASH_MAX_RADIUS
+    // (exponential decay — never actually reaches it, just gets close) instead
+    // of continuing 1:1 with the requested radius, and peak opacity drops in
+    // step. A streak-5 super still asks for the biggest, most translucent
+    // flash in the match; it just can't ask for one wide and bright enough to
+    // paint over both fighters.
+    const overflow = Math.max(0, radius - FLASH_BLOWOUT_RADIUS);
+    const cappedRadius =
+      overflow > 0
+        ? FLASH_BLOWOUT_RADIUS + (FLASH_MAX_RADIUS - FLASH_BLOWOUT_RADIUS) * (1 - Math.exp(-overflow))
+        : radius;
+    const peakOpacity = overflow > 0 ? Math.max(FLASH_MIN_OPACITY, 1 - overflow * 0.25) : 1;
+
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(1, 12, 10),
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 1,
+        opacity: peakOpacity,
         blending: THREE.AdditiveBlending,
         depthWrite: false
       })
     );
     mesh.position.copy(position);
-    mesh.scale.setScalar(radius * 0.35);
+    mesh.scale.setScalar(cappedRadius * 0.35);
     stage.add(mesh);
-    flashes.push({ mesh, life: 0, maxLife: 0.18, startScale: radius * 0.35, endScale: radius });
+    flashes.push({
+      mesh,
+      life: 0,
+      maxLife: 0.18,
+      startScale: cappedRadius * 0.35,
+      endScale: cappedRadius,
+      peakOpacity
+    });
   }
 
   return {
@@ -375,7 +416,7 @@ export function createFx(stage: Stage, layer: HTMLElement): Fx {
         flash.mesh.scale.setScalar(flash.startScale + (flash.endScale - flash.startScale) * t);
 
         const material = flash.mesh.material as THREE.MeshBasicMaterial;
-        material.opacity = Math.max(0, 1 - t * t);
+        material.opacity = Math.max(0, flash.peakOpacity * (1 - t * t));
 
         if (flash.life >= flash.maxLife) {
           flash.mesh.removeFromParent();
