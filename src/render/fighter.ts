@@ -1,45 +1,26 @@
 /**
- * A fighter is a floating terminal window on a body.
+ * A fighter is a real KayKit character model with a floating terminal-text
+ * billboard hovering above its head.
  *
- * The head is a canvas texture rendering the model's actual streaming output, so
- * the thing you read and the thing that throws the punch are literally the same
- * object. Poses are seven scalars lerped every frame rather than a skeleton —
- * enough expression for arcade readability, zero asset pipeline.
+ * The model loads asynchronously through `GLTFLoader` and is driven by an
+ * `AnimationMixer` against the pack's baked clips (see `POSE_CLIPS`), but
+ * `createFighter()` itself stays synchronous: it returns a fully-formed
+ * `FighterRig` immediately, and the loaded geometry/animations simply appear
+ * inside `group` once the fetch resolves. Callers (`main.ts`, `select.ts`)
+ * never know or care whether the model has finished loading yet.
  *
- * The head hangs off the root rather than the torso: the body twists into a 3/4
- * fighting stance, while the screen stays square to the fixed camera so the text
- * is always readable. That split is the whole trick behind the look.
+ * The billboard sprite reuses the original CRT canvas-texture logic — same
+ * `paint()`/`wrap()` — but is now a `THREE.Sprite` (always faces the camera,
+ * no manual yaw needed) repositioned every frame to float just above the
+ * model's actual `head` bone, instead of being the fighter's head itself.
  */
 
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { FighterProfile } from '../fighters';
-import type { FighterPart, GeometrySpec } from './fighter-plan';
-import { buildFighterPlan } from './fighter-plan';
+import { characterFor, characterAssetUrl } from '../roster/characters';
 
 export type PoseName = 'idle' | 'windup' | 'attack' | 'guard' | 'hurt' | 'ko' | 'win';
-
-interface Pose {
-  forward: number;
-  crouch: number;
-  lean: number;
-  punch: number;
-  guardUp: number;
-  recoil: number;
-  fallen: number;
-}
-
-const POSES: Record<PoseName, Pose> = {
-  idle:   { forward: 0,    crouch: 0,    lean: 0,     punch: 0, guardUp: 0.25, recoil: 0, fallen: 0 },
-  windup: { forward: -0.3, crouch: 0.16, lean: -0.24, punch: 0, guardUp: 0.55, recoil: 0, fallen: 0 },
-  attack: { forward: 0.8,  crouch: 0.04, lean: 0.36,  punch: 1, guardUp: 0,    recoil: 0, fallen: 0 },
-  guard:  { forward: -0.2, crouch: 0.26, lean: -0.12, punch: 0, guardUp: 1,    recoil: 0, fallen: 0 },
-  hurt:   { forward: -0.5, crouch: 0.12, lean: -0.42, punch: 0, guardUp: 0,    recoil: 1, fallen: 0 },
-  ko:     { forward: -1.1, crouch: 0,    lean: -0.5,  punch: 0, guardUp: 0,    recoil: 1, fallen: 1 },
-  win:    { forward: 0,    crouch: -0.1, lean: 0.06,  punch: 0, guardUp: 0.95, recoil: 0, fallen: 0 }
-};
-
-/** Angle that squares a fighter's screen to the fixed camera. */
-const CAMERA_YAW = 0.3;
 
 export interface FighterRig {
   group: THREE.Group;
@@ -50,6 +31,29 @@ export interface FighterRig {
   update(dt: number, elapsed: number): void;
   headPosition(): THREE.Vector3;
 }
+
+/** Maps the rig's abstract pose vocabulary onto the vendored KayKit clip names. */
+const POSE_CLIPS: Record<PoseName, string> = {
+  idle: 'Idle',
+  windup: 'Blocking',
+  attack: 'Unarmed_Melee_Attack_Punch_A',
+  guard: 'Block',
+  hurt: 'Hit_A',
+  ko: 'Death_A',
+  win: 'Cheer'
+};
+
+/** K.O. holds its last frame instead of looping — every other pose loops. */
+const CLAMP_POSES: ReadonlySet<PoseName> = new Set(['ko']);
+
+/** The vendored rigs are authored facing +Z; this turns them to face the opponent. */
+const FACING_OFFSET = Math.PI;
+
+/** World-unit height the streaming-text billboard floats above the head bone. */
+const BILLBOARD_HEAD_OFFSET = 0.5;
+
+/** Base emissive glow applied to every tinted material before charge/flash heat it up. */
+const BASE_EMISSIVE_INTENSITY = 0.3;
 
 function hex(color: number): string {
   return `#${color.toString(16).padStart(6, '0')}`;
@@ -70,136 +74,101 @@ function wrap(text: string, charsPerLine: number): string[] {
   return lines;
 }
 
-const FORWARD = new THREE.Vector3(0, 0, 1);
-
-/** Stretch a unit-length box between two local-space points. */
-function connect(limb: THREE.Mesh, from: THREE.Vector3, to: THREE.Vector3): void {
-  const delta = to.clone().sub(from);
-  const length = delta.length();
-  limb.position.copy(from).addScaledVector(delta, 0.5);
-  limb.quaternion.setFromUnitVectors(FORWARD, delta.normalize());
-  limb.scale.z = Math.max(length, 0.001);
+/** Finds the rig's `head` joint — every vendored KayKit model names it exactly `head`. */
+function findHeadBone(root: THREE.Object3D): THREE.Object3D | null {
+  let exact: THREE.Object3D | null = null;
+  let partial: THREE.Object3D | null = null;
+  root.traverse((obj) => {
+    if (!(obj as THREE.Bone).isBone) return;
+    const lower = obj.name.toLowerCase();
+    if (lower === 'head') exact = obj;
+    else if (!partial && lower.includes('head')) partial = obj;
+  });
+  return exact ?? partial;
 }
 
-/** Build a Three.js geometry from a pure `GeometrySpec` (see `fighter-plan.ts`). */
-function geometryFor(spec: GeometrySpec): THREE.BufferGeometry {
-  switch (spec.kind) {
-    case 'box':
-      return new THREE.BoxGeometry(spec.size[0], spec.size[1], spec.size[2] ?? spec.size[1]);
-    case 'sphere':
-      return new THREE.SphereGeometry(spec.size[0], 20, 16);
-    case 'octahedron':
-      return new THREE.OctahedronGeometry(spec.size[0], 0);
-    case 'torus':
-      return new THREE.TorusGeometry(spec.size[0], spec.size[1], 12, 28);
-    case 'plane':
-      return new THREE.PlaneGeometry(spec.size[0], spec.size[1]);
-  }
-}
+const gltfLoader = new GLTFLoader();
 
 export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig {
-  // `inward` points from this fighter toward the opponent.
-  const inward = -side;
   const baseX = side * 2.55;
   const visual = profile.visual;
-
-  // The pure geometry plan (roster/visuals.ts -> render/fighter-plan.ts) is the only
-  // place fighter shape/size/material numbers come from — this function just turns
-  // each named part into a real Three.js mesh.
-  const plan = buildFighterPlan(visual);
-  const partsByName = new Map(plan.map((p) => [p.name, p]));
-  function part(name: string): FighterPart {
-    const found = partsByName.get(name);
-    if (!found) throw new Error(`fighter plan missing part: ${name}`);
-    return found;
-  }
+  const character = characterFor(profile.name);
 
   const group = new THREE.Group();
   group.position.set(baseX, 0, 0);
-  group.scale.setScalar(visual.scale);
+  group.scale.setScalar(character.modelScale);
 
-  const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: visual.color,
-    emissive: visual.color,
-    emissiveIntensity: 0.22,
-    roughness: 0.4,
-    metalness: 0.6
-  });
-  const limbMaterial = new THREE.MeshStandardMaterial({
-    color: 0x121a2b,
-    emissive: visual.accent,
-    emissiveIntensity: 0.45,
-    roughness: 0.3,
-    metalness: 0.75
-  });
-  const fistMaterial = new THREE.MeshStandardMaterial({
-    color: visual.accent,
-    emissive: visual.accent,
-    emissiveIntensity: 0.8,
-    roughness: 0.25,
-    metalness: 0.5
-  });
-  const bezelMaterial = new THREE.MeshStandardMaterial({
-    color: 0x080d16,
-    emissive: visual.accent,
-    emissiveIntensity: 0.3,
-    roughness: 0.45,
-    metalness: 0.7
-  });
-  const headMaterial = new THREE.MeshStandardMaterial({
-    color: visual.trim,
-    emissive: visual.trim,
-    emissiveIntensity: 0.35,
-    roughness: 0.35,
-    metalness: 0.65
-  });
+  // Holds the loaded glTF scene once it arrives; rotated so the model (authored
+  // facing +Z) faces across the arena toward the opponent.
+  const model = new THREE.Group();
+  model.rotation.y = (side === 1 ? Math.PI : 0) + FACING_OFFSET;
+  group.add(model);
 
-  // Body twists into a 3/4 stance so the silhouette reads as a fighter, not a box.
-  const body = new THREE.Group();
-  body.rotation.y = inward * 0.7;
-  group.add(body);
+  let mixer: THREE.AnimationMixer | null = null;
+  const actions = new Map<string, THREE.AnimationAction>();
+  let currentAction: THREE.AnimationAction | null = null;
+  let headBone: THREE.Object3D | null = null;
+  const tintedMaterials: THREE.MeshStandardMaterial[] = [];
 
-  const torso = new THREE.Mesh(geometryFor(part('torso').geometry), bodyMaterial);
-  torso.position.y = 1.5;
-  torso.castShadow = true;
-  body.add(torso);
+  let pendingPose: PoseName = 'idle';
 
-  const shoulders = new THREE.Mesh(geometryFor(part('shoulders').geometry), limbMaterial);
-  shoulders.position.y = 2.05;
-  shoulders.castShadow = true;
-  body.add(shoulders);
+  function applyPose(pose: PoseName): void {
+    if (!mixer) return;
+    const clipName = POSE_CLIPS[pose];
+    const nextAction = actions.get(clipName);
+    if (!nextAction) return; // this rig doesn't have the clip — keep whatever is playing
+    const clamp = CLAMP_POSES.has(pose);
+    nextAction.reset();
+    nextAction.setLoop(clamp ? THREE.LoopOnce : THREE.LoopRepeat, Infinity);
+    nextAction.clampWhenFinished = clamp;
+    nextAction.play();
+    if (currentAction && currentAction !== nextAction) {
+      currentAction.crossFadeTo(nextAction, 0.2, false);
+    }
+    currentAction = nextAction;
+  }
 
-  const hips = new THREE.Mesh(geometryFor(part('hips').geometry), limbMaterial);
-  hips.position.y = part('hips').position[1];
-  hips.castShadow = true;
-  body.add(hips);
+  gltfLoader.load(
+    characterAssetUrl(character.model, import.meta.env.BASE_URL),
+    (gltf) => {
+      const scene = gltf.scene;
 
-  const fistLead = new THREE.Mesh(geometryFor(part('fistLead').geometry), fistMaterial);
-  const fistRear = new THREE.Mesh(geometryFor(part('fistRear').geometry), fistMaterial);
-  fistLead.castShadow = true;
-  fistRear.castShadow = true;
-  body.add(fistLead, fistRear);
+      scene.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        const cloned = materials.map((material) => {
+          const clone = (material as THREE.MeshStandardMaterial).clone();
+          clone.color.setHex(character.skin);
+          if ('emissive' in clone) {
+            (clone as THREE.MeshStandardMaterial).emissive.setHex(character.skin);
+            (clone as THREE.MeshStandardMaterial).emissiveIntensity = BASE_EMISSIVE_INTENSITY;
+          }
+          tintedMaterials.push(clone as THREE.MeshStandardMaterial);
+          return clone;
+        });
+        mesh.material = Array.isArray(mesh.material) ? cloned : cloned[0];
+      });
 
-  const armLead = new THREE.Mesh(geometryFor(part('armLead').geometry), limbMaterial);
-  const armRear = new THREE.Mesh(geometryFor(part('armRear').geometry), limbMaterial);
-  body.add(armLead, armRear);
+      model.add(scene);
+      headBone = findHeadBone(scene);
 
-  const footLead = new THREE.Mesh(geometryFor(part('footLead').geometry), limbMaterial);
-  const footRear = new THREE.Mesh(geometryFor(part('footRear').geometry), limbMaterial);
-  footLead.castShadow = true;
-  footRear.castShadow = true;
-  body.add(footLead, footRear);
+      mixer = new THREE.AnimationMixer(scene);
+      for (const clip of gltf.animations) {
+        actions.set(clip.name, mixer.clipAction(clip));
+      }
+      applyPose(pendingPose);
+    },
+    undefined,
+    () => {
+      // A missing/broken model asset must never break the rig — the billboard
+      // (and the rest of the match) keeps working with no body attached.
+    }
+  );
 
-  const legLead = new THREE.Mesh(geometryFor(part('legLead').geometry), limbMaterial);
-  const legRear = new THREE.Mesh(geometryFor(part('legRear').geometry), limbMaterial);
-  body.add(legLead, legRear);
-
-  const shoulderLead = new THREE.Vector3(0, 2.02, 0.42);
-  const shoulderRear = new THREE.Vector3(0, 1.98, -0.46);
-  const hipLead = new THREE.Vector3(0, 0.78, 0.3);
-  const hipRear = new THREE.Vector3(0, 0.78, -0.3);
-
-  // --- the CRT head ------------------------------------------------------
+  // --- the floating streaming-text billboard ------------------------------
 
   const screenW = visual.screenSize[0];
   const screenH = visual.screenSize[1];
@@ -213,45 +182,17 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
 
-  // Parented to the root, not the body: the stance twists, the screen does not.
-  const head = new THREE.Group();
-  head.position.y = 3.12;
-  head.rotation.y = inward * CAMERA_YAW;
-  group.add(head);
-
-  const screenPart = part('screen');
-  const screen = new THREE.Mesh(
-    geometryFor(screenPart.geometry),
-    new THREE.MeshBasicMaterial({ map: texture, toneMapped: false, side: THREE.DoubleSide })
-  );
-  screen.position.z = screenPart.position[2];
-  head.add(screen);
-
-  const bezelPart = part('bezel');
-  const bezel = new THREE.Mesh(geometryFor(bezelPart.geometry), bezelMaterial);
-  bezel.position.set(bezelPart.position[0], bezelPart.position[1], bezelPart.position[2]);
-  bezel.castShadow = true;
-  head.add(bezel);
-
-  const neckPart = part('neck');
-  const neck = new THREE.Mesh(geometryFor(neckPart.geometry), limbMaterial);
-  neck.position.set(neckPart.position[0], neckPart.position[1], neckPart.position[2]);
-  head.add(neck);
-
-  // The headline visual variety: box / three stacked slabs / octahedron+torus-crest /
-  // sphere, picked per-fighter by `visual.headShape` (see `HEAD_GEOMETRY` in
-  // fighter-plan.ts). None of these pieces are ever repositioned in update() — they
-  // just ride along with the head group, same as the bezel.
-  for (const headPart of plan.filter((p) => p.role === 'head' || p.role === 'crest')) {
-    const mesh = new THREE.Mesh(geometryFor(headPart.geometry), headMaterial);
-    mesh.position.set(headPart.position[0], headPart.position[1], headPart.position[2]);
-    mesh.castShadow = true;
-    head.add(mesh);
-  }
-
-  const glow = new THREE.PointLight(visual.accent, 5, 7, 2);
-  glow.position.set(0, 0, 1.1);
-  head.add(glow);
+  const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const sprite = new THREE.Sprite(spriteMaterial);
+  // World-unit size the billboard should read at, regardless of this fighter's
+  // model scale — divide out `character.modelScale` since the sprite is a
+  // child of `group`, which already carries that scale.
+  const worldW = 2.15 * (screenW / 640);
+  const worldH = 1.34 * (screenH / 400);
+  sprite.scale.set(worldW / character.modelScale, worldH / character.modelScale, 1);
+  // Fallback position (roughly head height) until the real head bone loads.
+  sprite.position.set(0, 3.12 / character.modelScale, 0);
+  group.add(sprite);
 
   let currentText = '';
   let redraw = true;
@@ -289,25 +230,18 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   }
   paint();
 
-  // --- pose state --------------------------------------------------------
+  // --- state ---------------------------------------------------------------
 
-  const current: Pose = { ...POSES.idle };
-  let target: Pose = POSES.idle;
   let charge = 0;
   let flashAmount = 0;
-  const phase = Math.random() * Math.PI * 2;
-
-  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-  const leadFist = new THREE.Vector3();
-  const rearFist = new THREE.Vector3();
-  const leadFoot = new THREE.Vector3();
-  const rearFoot = new THREE.Vector3();
+  const headWorld = new THREE.Vector3();
 
   return {
     group,
 
     setPose(pose) {
-      target = POSES[pose];
+      pendingPose = pose;
+      applyPose(pose);
     },
 
     setScreenText(text) {
@@ -324,64 +258,28 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     },
 
     headPosition() {
-      return head.getWorldPosition(new THREE.Vector3());
+      if (headBone) {
+        headBone.getWorldPosition(headWorld);
+        headWorld.y += BILLBOARD_HEAD_OFFSET;
+        return headWorld.clone();
+      }
+      return sprite.getWorldPosition(new THREE.Vector3());
     },
 
-    update(dt, elapsed) {
-      // Attacks snap out, everything else settles.
-      const speed = target.punch > 0.5 ? 24 : 10;
-      const t = 1 - Math.exp(-speed * Math.max(dt, 0.0001));
-      for (const key of Object.keys(current) as (keyof Pose)[]) {
-        current[key] = lerp(current[key], target[key], t);
+    update(dt, _elapsed) {
+      if (mixer) mixer.update(dt);
+
+      if (headBone) {
+        headBone.getWorldPosition(headWorld);
+        headWorld.y += BILLBOARD_HEAD_OFFSET;
+        group.worldToLocal(headWorld);
+        sprite.position.copy(headWorld);
       }
 
-      const bob = Math.sin(elapsed * 2.4 + phase) * 0.05;
-      const jitter = charge * 0.04 * Math.sin(elapsed * 40);
-
-      group.position.x =
-        baseX + (current.forward - current.recoil * 0.75 + jitter) * inward;
-      group.position.y = -current.crouch * 0.3 - current.fallen * 0.45;
-      group.rotation.z = current.fallen * 1.2 * inward;
-
-      torso.position.y = 1.5 + bob - current.crouch * 0.24;
-      // Body-local +Z points at the opponent, so a positive X rotation leans in.
-      body.rotation.x = current.lean * 0.55;
-      shoulders.position.y = 2.05 + bob - current.crouch * 0.2;
-
-      head.position.y = 3.12 + bob * 1.3 - current.crouch * 0.36 - current.fallen * 0.5;
-      head.position.x = current.lean * 0.5 * inward + current.forward * 0.25 * inward;
-      head.rotation.z = -current.lean * 0.18 * inward - current.fallen * 0.6 * inward;
-
-      // Fists live in body-local space, where +Z already points at the opponent.
-      leadFist.set(
-        0.12,
-        1.72 + bob + current.guardUp * 0.42 + current.punch * 0.22,
-        1.15 + current.punch * 1.5 - current.guardUp * 0.18
-      );
-      rearFist.set(
-        -0.14,
-        1.5 + bob * 0.7 + current.guardUp * 0.5,
-        0.15 + current.guardUp * 0.85
-      );
-      fistLead.position.copy(leadFist);
-      fistRear.position.copy(rearFist);
-      fistLead.rotation.z = current.punch * 0.5;
-
-      leadFoot.set(0, 0.13, 0.62 + current.forward * 0.4);
-      rearFoot.set(0, 0.13, -0.58 + current.forward * 0.2);
-      footLead.position.copy(leadFoot);
-      footRear.position.copy(rearFoot);
-
-      connect(armLead, shoulderLead, leadFist);
-      connect(armRear, shoulderRear, rearFist);
-      connect(legLead, hipLead, leadFoot);
-      connect(legRear, hipRear, rearFoot);
-
-      // The longer the reply, the hotter the fighter runs.
-      bodyMaterial.emissiveIntensity = 0.22 + charge * 0.85 + flashAmount;
-      limbMaterial.emissiveIntensity = 0.45 + charge * 0.7 + flashAmount * 2;
-      glow.intensity = 5 + charge * 9 + flashAmount * 22;
       flashAmount *= 0.86;
+      for (const material of tintedMaterials) {
+        material.emissiveIntensity = BASE_EMISSIVE_INTENSITY + charge * 0.85 + flashAmount;
+      }
 
       blinkTimer += dt;
       if (blinkTimer > 0.45) {

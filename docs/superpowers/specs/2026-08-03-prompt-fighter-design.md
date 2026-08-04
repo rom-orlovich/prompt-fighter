@@ -135,12 +135,21 @@ similarity to the speaker's own previous turn (looping) · self-correction marke
 
 Dark void, neon grid floor with reflection, volumetric spotlights, Tekken-style 3/4 side camera.
 
-Each fighter is a **floating CRT/terminal window as the head** — a plane with a canvas texture
-rendering the model's actual streaming text with a blinking cursor — over a low-poly torso, with
-floating fists and feet and no elbows or knees. Brand color per model with an emissive rim.
+Each fighter is a **real CC0 KayKit low-poly humanoid model**, loaded via `GLTFLoader` and
+animated at runtime with `AnimationMixer` (idle, walk, punch, kick, hit-react, K.O. clips).
+The model's brand color is applied via material tinting on the base mesh — recoloring the
+stock KayKit materials to the model's brand hue with an emissive rim — rather than swapping
+geometry, so a single rig serves every model.
 
-All geometry is procedural. No imported assets: this keeps the public repo free of any asset
-licensing question and keeps the clone small.
+The streaming-text feature survives from the earlier procedural design: a canvas-textured
+plane renders the model's actual streaming text with a blinking cursor, but it is now a
+camera-facing billboard floated above the head bone of the humanoid rig, rather than being
+the head itself.
+
+Asset policy is scoped, not asset-free: CC0-licensed low-poly humanoid assets are permitted
+for fighter models; no proprietary or attribution-required assets. This keeps the public repo
+free of any licensing question while allowing real character models instead of a fully
+procedural rig.
 
 Game feel is carried by: 80ms hitstop on impact, screen shake, spark bursts, floating damage
 numbers, Tekken-style angled health bars with a white chip-damage bar that lags behind, combo
