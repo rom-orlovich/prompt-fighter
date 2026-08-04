@@ -343,38 +343,44 @@ test.describe('fight feel', () => {
     expect(errors).toEqual([]);
   });
 
-  // --- G10: combo feedback must fire in a real match, not just when driven --
-  test('the combo counter actually fires during a real match, not only when driven', async ({
-    page
-  }) => {
-    test.setTimeout(180000);
-    const errors: string[] = [];
-    page.on('pageerror', (e) => errors.push(String(e)));
+  // --- G11: combo feedback must fire in BOTH bundled stages, not just one ---
+  //
+  // G10 wired the HUD counter to "2+ `hit` events landed in a single turn",
+  // which only happens when a super also carries a `drain` effect — only
+  // GEMINI's kit does that, so this fired for tabs-vs-spaces (GEMINI vs
+  // LOCAL 7B) and silently never fired for microservices (CLAUDE vs CODEX).
+  // That is exactly how a half-broken counter shipped green: the one test
+  // below only ever checked the stage that happened to work. G11 re-bases
+  // the counter on a real streak (see `extendStreak` in `main.ts`), so this
+  // now runs both bundled stages and fails if either stops producing combos.
+  for (const [stageName, cardIndex] of [
+    ['microservices (CLAUDE vs CODEX)', 0],
+    ['tabs-vs-spaces (GEMINI vs LOCAL 7B)', 1]
+  ] as const) {
+    test(`the combo counter fires during a real, undriven ${stageName} match`, async ({ page }) => {
+      test.setTimeout(180000);
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(String(e)));
 
-    // `tabs-vs-spaces.json` (the second stage card, GEMINI vs LOCAL 7B) is the
-    // transcript that actually exercises the trigger: GEMINI's super,
-    // CONTEXT WINDOW SLAM, has a `drain` effect, which lands as a second `hit`
-    // event against the same defender in the same turn (see `combat.ts`'s
-    // `outcome.hits`). CLAUDE/CODEX's supers in `microservices.json` don't
-    // drain, so that matchup never produces a real multi-hit turn — this is
-    // an honest trigger, not one that fires everywhere.
-    await startMatch(page, FIGHT, 1);
-    await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
-      timeout: 120000
+      await startMatch(page, FIGHT, cardIndex);
+      await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
+        timeout: 120000
+      });
+
+      const combos: { side: string; count: number }[] = await page.evaluate(
+        () => (window as any).__pf.presentationCombos
+      );
+      console.log(`presentation combos observed in ${stageName}:`, JSON.stringify(combos));
+
+      expect(
+        combos.length,
+        `the HUD combo counter fired at least once in an undriven ${stageName} match`
+      ).toBeGreaterThan(0);
+      for (const combo of combos) {
+        expect(combo.count, `displayed combo count for ${combo.side}`).toBeGreaterThanOrEqual(2);
+      }
+
+      expect(errors).toEqual([]);
     });
-
-    const combos: { side: string; count: number }[] = await page.evaluate(
-      () => (window as any).__pf.presentationCombos
-    );
-    console.log('presentation combos observed in a real match:', JSON.stringify(combos));
-
-    expect(combos.length, 'the HUD combo counter fired at least once in an undriven match').toBeGreaterThan(
-      0
-    );
-    for (const combo of combos) {
-      expect(combo.count, `displayed combo count for ${combo.side}`).toBeGreaterThanOrEqual(2);
-    }
-
-    expect(errors).toEqual([]);
-  });
+  }
 });

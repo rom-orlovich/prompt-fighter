@@ -182,7 +182,7 @@ interface DebugBridge {
    * the current (or most recent) match — distinct from the engine's own
    * `combo` event, which needs the same attacker to land two `continuesThread`
    * hits in a row and never reaches count >= 2 against an alternating-speaker
-   * transcript. See `turnAttacker`/`turnHitCount` in `handleEvent`.
+   * transcript. See `streakSide`/`streakCount` in `handleEvent` (G11).
    */
   presentationCombos: { side: Speaker; count: number }[];
   /** Runs a bundled transcript through the engine with no rendering, no timers
@@ -441,7 +441,7 @@ async function startMatch(file: string): Promise<void> {
   standingRootY.p1 = 0;
   standingRootY.p2 = 0;
   turnAttacker = null;
-  turnHitCount = 0;
+  resetStreak();
 
   const p1 = profileFor(matchup.p1.fighter);
   const p2 = profileFor(matchup.p2.fighter);
@@ -605,24 +605,74 @@ const KNOCKBACK_CRIT = 1.6;
 const LUNGE_STRENGTH = 1;
 
 /**
- * Presentation-side combo tracking (G10).
+ * Presentation-side combo tracking (G11).
  *
  * The engine's own `combo` event needs the SAME attacker to land two
  * `continuesThread` hits in consecutive turns — but every bundled transcript
  * alternates speakers, so the attacker always changes turn to turn and that
  * count never exceeds 1. It is not a bug in the counter, it is a trigger that
- * cannot fire against this content.
+ * cannot fire against this content, and it is left untouched (HARD
+ * CONSTRAINT: `src/engine/` and its own `combo` event are out of scope).
  *
- * A single turn can still land more than one `hit` on the opponent, though: a
- * super's own damage plus an ability's `drain` effect both resolve as
- * separate `hit` events against the same defender in the same turn (see
- * `combat.ts`'s `outcome.hits`). That IS a real multi-hit flourish an
- * attacker landed in one exchange, so it is what drives the HUD combo counter
- * here — purely presentational, no engine event or damage value is touched.
+ * Loop 2 keyed the HUD counter off "2+ `hit` events landed in a single turn",
+ * which only happens when a super also carries a `drain` effect — i.e. only
+ * GEMINI's kit. That is one ability's shape, not a combo.
+ *
+ * What a fighting-game HUD actually means by "combo" is a STREAK: how many
+ * damaging blows the same fighter has landed in a row, whether they came from
+ * one flashy turn (a super plus its own drain, still two `hit` events against
+ * the same defender) or from several ordinary turns in which the other side
+ * kept whiffing or getting blocked. Tracking it that way subsumes Loop 2's
+ * same-turn rule for free — a super+drain turn is still two consecutive
+ * same-attacker hits — while also firing in matchups that never throw a
+ * multi-hit turn at all.
+ *
+ * A landed `super` counts toward the streak on its OWN event, in addition to
+ * the `hit`/`blocked` event that follows it for the actual credibility change
+ * (see the `super` case below). That is not double-counting one blow: a super
+ * already renders as two distinct connect beats on screen — its own named-move
+ * flourish (hitstop, camera zoom, themed FX) fires first, then a separate
+ * impact flash/burst/knockback plays when its damage lands — so counting it
+ * as two blows matches what the player actually watches happen, and matches
+ * how the critic's reference numbers (max streak 5 for microservices, 3 for
+ * tabs-vs-spaces) were measured: consecutive `hit`/`counter`/`super` events
+ * with damage > 0 by the same attacker.
+ *
+ * `blocked` and `whiff` do NOT break the streak. Two reasons: (1) neither
+ * hands the other fighter anything — the streak's owner didn't get hit back,
+ * they just didn't fully connect, so treating a partial block as equivalent
+ * to eating a counter would read as harsher than what actually happened on
+ * screen; (2) it keeps this in step with the critic's measurement above,
+ * which by construction skips over blocked/whiff turns rather than treating
+ * them as interruptions. The streak DOES reset the moment the opponent lands
+ * a damaging blow of their own (a clean `hit`, `counter` or `super`), and at
+ * every round boundary and match end — a combo does not survive into the next
+ * round, let alone the next fight.
  */
+let streakSide: Speaker | null = null;
+let streakCount = 0;
+
+/** Registers one damaging blow landed by `side`, and pops the HUD if it's 2+. */
+function extendStreak(side: Speaker, damage: number): void {
+  if (damage <= 0) return;
+  streakCount = side === streakSide ? streakCount + 1 : 1;
+  streakSide = side;
+  if (streakCount >= 2) {
+    hud.combo(side, streakCount);
+    window.__pf.presentationCombos.push({ side, count: streakCount });
+  }
+}
+
+/** Round boundary or match end: a combo never carries into what comes next. */
+function resetStreak(): void {
+  streakSide = null;
+  streakCount = 0;
+}
+
+/** The real attacker of the in-flight turn, from its `attack` event — used to
+ * tell a `hit` landed on the opponent apart from a self-damage `hit` (e.g. an
+ * overreach ability), which the `hit` event alone can't distinguish. */
 let turnAttacker: Speaker | null = null;
-/** Hits landed against the opponent (not self-damage) so far this turn. */
-let turnHitCount = 0;
 
 const LOUD_LABELS = new Set([
   'CITED EVIDENCE',
@@ -647,10 +697,7 @@ function handleEvent(event: CombatEvent): void {
       rigs[event.by].lunge(LUNGE_STRENGTH);
       sfx.whoosh();
       if (LOUD_LABELS.has(event.label)) hud.announce(event.label);
-      // A new turn's own hits start their own count — see the comment above
-      // `turnAttacker`.
       turnAttacker = event.by;
-      turnHitCount = 0;
       break;
     }
 
@@ -679,14 +726,10 @@ function handleEvent(event: CombatEvent): void {
       syncBars();
 
       // A hit against the attacker itself (self-damage, e.g. an overreach
-      // ability) doesn't count toward the flurry — only blows that actually
-      // landed on the opponent this turn do.
+      // ability) doesn't extend anyone's streak — only blows that actually
+      // landed on the opponent do.
       if (event.target !== turnAttacker && turnAttacker !== null) {
-        turnHitCount += 1;
-        if (turnHitCount >= 2) {
-          hud.combo(turnAttacker, turnHitCount);
-          window.__pf.presentationCombos.push({ side: turnAttacker, count: turnHitCount });
-        }
+        extendStreak(turnAttacker, event.damage);
       }
       break;
     }
@@ -727,6 +770,12 @@ function handleEvent(event: CombatEvent): void {
       fx.damageNumber(victim.headPosition(), event.damage, true);
       sfx.crit();
       syncBars();
+      // A counter is the defender striking back — it both lands a damaging
+      // blow for `event.by` and, per the reset rule above, is exactly the
+      // kind of blow that ends the opponent's streak. `extendStreak` handles
+      // both: it starts a fresh streak at 1 for `event.by` whenever they
+      // aren't already its owner.
+      extendStreak(event.by, event.damage);
       break;
     }
 
@@ -769,6 +818,10 @@ function handleEvent(event: CombatEvent): void {
       stage.hitstop(300);
       stage.zoomPunch(1.1);
       sfx.crit();
+      // A super is its own landed blow for streak purposes, on top of whatever
+      // `hit`/`blocked` event follows it for the actual credibility change —
+      // see the comment above `streakSide` for why.
+      extendStreak(event.by, event.damage);
       break;
     }
 
@@ -807,6 +860,9 @@ function handleEvent(event: CombatEvent): void {
     case 'roundEnd': {
       roundJustEnded = true;
       if (event.winner) hud.setRounds(event.winner, engine.state[event.winner].roundsWon);
+      // A combo is a property of the fight in progress — the next round starts
+      // with nobody having landed anything yet.
+      resetStreak();
       break;
     }
 
@@ -815,6 +871,7 @@ function handleEvent(event: CombatEvent): void {
       source?.stop();
       window.__pf.matchEnded = true;
       window.__pf.matchEndedAt = performance.now();
+      resetStreak();
 
       // The win/lose tableau: the winner celebrates, the loser stays down, and
       // both hold for as long as the result card is up. Nothing clears these —
