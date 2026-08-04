@@ -13,8 +13,14 @@ export interface Sfx {
   block(): void;
   whoosh(): void;
   ko(): void;
+  /** Match-end fanfare — the only cue that plays over the result card. */
+  win(): void;
   bell(): void;
 }
+
+/** Every cue name, so callers can enumerate/instrument the set. */
+export const SFX_CUES = ['hit', 'crit', 'block', 'whoosh', 'ko', 'win', 'bell'] as const;
+export type SfxCue = (typeof SFX_CUES)[number];
 
 export function createAudio(): Sfx {
   let ctx: AudioContext | null = null;
@@ -82,6 +88,14 @@ export function createAudio(): Sfx {
     ko() {
       tone(420, 40, 1.2, 'sawtooth', 0.28);
       noise(0.7, 2600, 0.25);
+    },
+    win() {
+      // A rising major-triad arpeggio: unmistakably "you won" against the
+      // downward sawtooth of `ko`.
+      tone(523, 528, 0.22, 'triangle', 0.2);
+      tone(659, 664, 0.34, 'triangle', 0.18);
+      tone(784, 792, 0.5, 'triangle', 0.16);
+      tone(1046, 1052, 0.8, 'sine', 0.13);
     },
     bell() {
       tone(880, 780, 0.5, 'triangle', 0.2);

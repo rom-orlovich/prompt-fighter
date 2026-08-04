@@ -141,10 +141,14 @@ export function createHud(): Hud {
 
     combo(side, count) {
       const node = parts[side].combo;
-      node.textContent = `${count} HIT COMBO`;
-      node.classList.remove('pop');
+      // Escalation tiers: a 2-hit and a 6-hit combo used to render as the same
+      // static line with the same pop, so a run of hits carried no build.
+      const tier = count >= 6 ? 'tier-3' : count >= 4 ? 'tier-2' : 'tier-1';
+      node.textContent = count >= 4 ? `${count} HIT COMBO!!` : `${count} HIT COMBO`;
+      node.dataset.count = String(count);
+      node.classList.remove('pop', 'tier-1', 'tier-2', 'tier-3');
       void node.offsetWidth; // restart the animation
-      node.classList.add('pop');
+      node.classList.add('pop', tier);
     },
 
     announce(text) {

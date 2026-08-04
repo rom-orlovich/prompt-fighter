@@ -7,6 +7,7 @@
 
 import './style.css';
 
+import type { Vector3 } from 'three';
 import { FightEngine } from './engine/match';
 import type { CombatEvent, PlayerAction, Speaker } from './engine/types';
 import { ROSTER, profileFor } from './fighters';
@@ -17,8 +18,8 @@ import { simulateTranscript } from './engine/simulate';
 import type { SimulateResult } from './engine/simulate';
 import { createReplaySource, loadTranscript } from './sources/replay';
 import type { MatchSource, StreamHandlers } from './sources/types';
-import { createAudio } from './render/audio';
-import { createFighter, type FighterRig } from './render/fighter';
+import { createAudio, SFX_CUES, type Sfx, type SfxCue } from './render/audio';
+import { createFighter, type FighterRig, type PoseName } from './render/fighter';
 import { createFx } from './render/fx';
 import { createHud } from './render/hud';
 import { createSelectScreen } from './render/select';
@@ -30,7 +31,28 @@ import { createStage } from './render/scene';
  * minutes — used by the Playwright end-to-end suite. It changes only timing, never
  * the sequence of events the engine emits.
  */
-const FAST = new URLSearchParams(window.location.search).get('fast') === '1';
+const QUERY = new URLSearchParams(window.location.search);
+const FAST = QUERY.get('fast') === '1';
+
+/**
+ * `?hold=1` keeps the *dramatic* pauses — the beat after a K.O., the round
+ * transition, the wait before the result card — at full length even under
+ * `?fast=1`, which otherwise blinks past them in a tenth of a second.
+ *
+ * It exists because the K.O. and win/lose tableaux are the two moments this
+ * whole file is for, and they were the only two a fast end-to-end run could not
+ * observe. It changes no game logic and no event ordering — only how long the
+ * renderer lingers on a moment that has already been decided.
+ */
+const HOLD = QUERY.get('hold') === '1';
+
+/**
+ * `?draw=1` forces the real WebGL loop even under `?fast=1`, which otherwise
+ * runs the simulation headlessly. Combined with `?hold=1` it gives a fast but
+ * fully *watchable* match — the only way to screenshot a K.O. or a win/lose
+ * tableau without sitting through ninety seconds of real-time debate.
+ */
+const DRAW = QUERY.get('draw') === '1';
 
 const ROUND_SECONDS = 99;
 /**
@@ -38,11 +60,11 @@ const ROUND_SECONDS = 99;
  * every round ends on a judges' decision instead of a knockout.
  */
 const CLOCK_RATE = 0.75;
-const RECOVERY_MS = FAST ? 30 : 700;
+const RECOVERY_MS = FAST && !HOLD ? 30 : 700;
 const REPLAY_PACE = FAST ? 0.03 : 1;
-const ROUND_INTRO_MS = FAST ? 60 : 1100;
-const ROUND_TRANSITION_MS = FAST ? 120 : 2200;
-const RESULT_DELAY_MS = FAST ? 150 : 2200;
+const ROUND_INTRO_MS = FAST && !HOLD ? 60 : 1100;
+const ROUND_TRANSITION_MS = FAST && !HOLD ? 120 : 2200;
+const RESULT_DELAY_MS = FAST && !HOLD ? 150 : 2200;
 /** Safety valve: how many full, KO-free passes through a transcript a single
  * match may take before the run loop gives up rather than spin forever. */
 const MAX_EXHAUSTED_PASSES = 8;
@@ -60,15 +82,101 @@ const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 // poking around in devtools) uses to observe and drive a match headlessly,
 // without needing to read pixels or race DOM animations.
 
+type Vec3 = [number, number, number];
+
+/** A live read of one fighter's rig — pose plus the bones that prove contact. */
+interface RigSnapshot {
+  pose: PoseName;
+  /** World position of the whole fighter (neutral X plus lunge/knockback). */
+  position: Vec3;
+  /** The X this fighter recovers back to. */
+  neutralX: number;
+  /** World position of the striking fist. */
+  hand: Vec3;
+  /** World position of the chest — a punch's target. */
+  chest: Vec3;
+  /** World position of the hips; drops toward the floor on a K.O. */
+  root: Vec3;
+  /** Tallest hip height seen while this fighter was upright, for comparison. */
+  standingRootY: number;
+  /** Signed knockback displacement, isolated from the step-in lunge. */
+  knockback: number;
+}
+
+/**
+ * One landed blow, measured. Written when the impact fires and then filled in
+ * over the following ~1.6s of frames, so a test can assert on the whole arc of
+ * a hit (did it connect, did it knock back, did the camera move, did the
+ * defender recover) from a single object instead of racing the render loop.
+ */
+interface ContactRecord {
+  kind: 'hit' | 'counter' | 'super';
+  by: Speaker;
+  target: Speaker;
+  damage: number;
+  crit: boolean;
+  /** `performance.now()` at the moment the event fired. */
+  t: number;
+  /** Centre-to-centre X distance between the fighters at the impact frame. */
+  gapAtEvent: number;
+  /** Closest the two fighters got during the strike. */
+  minGap: number;
+  /** Closest the attacker's fist got to the defender's chest. */
+  minHandChest: number;
+  /** Defender X on the last frame *before* the impact. */
+  targetXBefore: number;
+  /**
+   * Were BOTH fighters standing at neutral spacing when this landed?
+   *
+   * Blows arrive faster than a body can settle — a crit can land while either
+   * fighter is still sliding from the blow before it, and a super throws its
+   * victim most of the way across the ring. Absolute-spacing claims are only
+   * meaningful from a neutral start; this flag is what lets a test say so
+   * instead of averaging the two cases together and picking a threshold that
+   * means nothing for either.
+   */
+  atRest: boolean;
+  /** Defender X on the first frame at or after impact + 150ms. */
+  targetXAt150: number | null;
+  /** How long after the impact that sample actually landed, in milliseconds. */
+  at150Since: number | null;
+  /**
+   * The defender's knockback displacement at that same sample.
+   *
+   * Measured from the knockback component rather than raw world X: under
+   * `?fast=1` the defender's own next turn starts ~150ms after it was hit, and
+   * its step-in lunge would otherwise cancel out the very shove being measured.
+   */
+  knockAt150: number | null;
+  /** Largest knockback displacement reached during the window. */
+  peakKnockback: number;
+  /** Milliseconds until the knockback first fell back under 0.1 world units. */
+  settledMs: number | null;
+  /** Largest camera deviation from its resting position during the window. */
+  cameraPeak: number;
+}
+
 interface DebugBridge {
   /** Every CombatEvent emitted by the current (or most recent) match, in order. */
   events: CombatEvent[];
   /** Flips true the moment a `matchEnd` event fires. */
   matchEnded: boolean;
+  /** `performance.now()` of the most recent `matchEnd`, or null. */
+  matchEndedAt: number | null;
+  /** `performance.now()` of the most recent `ko`, or null. */
+  koAt: number | null;
   /** The static roster — colors, taglines, super names, visuals. */
   roster: typeof ROSTER;
   /** The fighter matchup resolved for the current (or most recent) match. */
   selection: MatchupSelectionResult | null;
+  /** Live per-side rig state — pose, world position, hand/chest/hip bones. */
+  rigs: Record<Speaker, RigSnapshot> | null;
+  /** The stage camera's current world position, and the position it rests at. */
+  camera: { position: Vec3; rest: Vec3 };
+  /** How many times each audio cue has fired this page-load. */
+  audio: Record<SfxCue, number>;
+  /** Every measured impact of the current (or most recent) match. */
+  contacts: ContactRecord[];
   /** Runs a bundled transcript through the engine with no rendering, no timers
    * and no player input — the fastest way to inspect a deterministic outcome. */
   simulate(file: string): Promise<SimulateResult>;
@@ -80,22 +188,48 @@ declare global {
   }
 }
 
+const canvas = document.getElementById('stage') as HTMLCanvasElement;
+const stage = createStage(canvas);
+const fx = createFx(stage, document.getElementById('fx-layer')!);
+const hud = createHud();
+
+// Every cue is counted on the way through, so an end-to-end run can assert that
+// each event type actually made a sound — the one property of the audio layer a
+// headless browser can check.
+const audioCounts = Object.fromEntries(SFX_CUES.map((cue) => [cue, 0])) as Record<SfxCue, number>;
+const sfx: Sfx = (() => {
+  const real = createAudio();
+  const counted = {} as Sfx;
+  for (const cue of SFX_CUES) {
+    counted[cue] = () => {
+      audioCounts[cue] += 1;
+      try {
+        real[cue]();
+      } catch {
+        // No AudioContext (headless, or before the first gesture) must never
+        // take the match down with it.
+      }
+    };
+  }
+  return counted;
+})();
+
 window.__pf = {
   events: [],
   matchEnded: false,
+  matchEndedAt: null,
+  koAt: null,
   roster: ROSTER,
   selection: null,
+  rigs: null,
+  camera: { position: [0, 0, 0], rest: stage.cameraRest.toArray() as Vec3 },
+  audio: audioCounts,
+  contacts: [],
   async simulate(file) {
     const transcript = await loadTranscript(`${import.meta.env.BASE_URL}transcripts/${file}`);
     return simulateTranscript(transcript);
   }
 };
-
-const canvas = document.getElementById('stage') as HTMLCanvasElement;
-const stage = createStage(canvas);
-const fx = createFx(stage, document.getElementById('fx-layer')!);
-const hud = createHud();
-const sfx = createAudio();
 
 const titleOverlay = document.getElementById('title')!;
 const resultOverlay = document.getElementById('result')!;
@@ -119,12 +253,84 @@ let roundJustEnded = false;
 let fighting = false;
 let roundClock = ROUND_SECONDS;
 
-stage.onFrame((dt, elapsed) => {
+/** Hip heights seen while each fighter was upright — the K.O. drop is measured against these. */
+const standingRootY: Record<Speaker, number> = { p1: 0, p2: 0 };
+/** Impacts still being measured; each is dropped once its window closes. */
+const openContacts: { record: ContactRecord; deadline: number }[] = [];
+
+const UPRIGHT_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['idle', 'windup', 'guard', 'attack']);
+/** How long after an impact the bridge keeps measuring it, in milliseconds. */
+const CONTACT_WINDOW_MS = 1600;
+
+function snapshot(side: Speaker): RigSnapshot {
+  const rig = rigs![side];
+  return {
+    pose: rig.currentPose(),
+    position: rig.worldPosition().toArray() as Vec3,
+    neutralX: rig.neutralX(),
+    hand: rig.handPosition().toArray() as Vec3,
+    chest: rig.chestPosition().toArray() as Vec3,
+    root: rig.rootPosition().toArray() as Vec3,
+    standingRootY: standingRootY[side],
+    knockback: rig.knockbackOffset()
+  };
+}
+
+function distance(a: Vec3, b: Vec3): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+stage.onFrame((dt, elapsed, real) => {
   if (rigs) {
-    rigs.p1.update(dt, elapsed);
-    rigs.p2.update(dt, elapsed);
+    rigs.p1.update(dt, elapsed, real);
+    rigs.p2.update(dt, elapsed, real);
   }
   fx.update(dt);
+
+  if (rigs) {
+    const live = { p1: snapshot('p1'), p2: snapshot('p2') };
+    for (const side of ['p1', 'p2'] as const) {
+      if (UPRIGHT_POSES.has(live[side].pose)) {
+        standingRootY[side] = Math.max(standingRootY[side], live[side].root[1]);
+        live[side].standingRootY = standingRootY[side];
+      }
+    }
+    window.__pf.rigs = live;
+    const camera = stage.camera.position;
+    window.__pf.camera.position = [camera.x, camera.y, camera.z];
+
+    // Fill in every impact still inside its measurement window.
+    const now = performance.now();
+    const gap = Math.abs(live.p1.position[0] - live.p2.position[0]);
+    const cameraOffset = Math.hypot(
+      camera.x - stage.cameraRest.x,
+      camera.y - stage.cameraRest.y,
+      camera.z - stage.cameraRest.z
+    );
+    for (let i = openContacts.length - 1; i >= 0; i -= 1) {
+      const open = openContacts[i]!;
+      const record = open.record;
+      const attacker = live[record.by];
+      const target = live[record.target];
+      const since = now - record.t;
+
+      record.minGap = Math.min(record.minGap, gap);
+      record.minHandChest = Math.min(record.minHandChest, distance(attacker.hand, target.chest));
+      record.cameraPeak = Math.max(record.cameraPeak, cameraOffset);
+
+      const shoved = Math.abs(target.knockback);
+      record.peakKnockback = Math.max(record.peakKnockback, shoved);
+      if (record.targetXAt150 === null && since >= 150) {
+        record.targetXAt150 = target.position[0];
+        record.at150Since = since;
+        record.knockAt150 = shoved;
+      }
+      if (record.settledMs === null && since >= 150 && shoved < 0.1) record.settledMs = since;
+
+      if (now >= open.deadline) openContacts.splice(i, 1);
+    }
+    lastFrameX = { p1: live.p1.position[0], p2: live.p2.position[0] };
+  }
 
   if (fighting && engine && !engine.matchOver) {
     roundClock = Math.max(0, roundClock - dt * CLOCK_RATE);
@@ -132,13 +338,57 @@ stage.onFrame((dt, elapsed) => {
     if (roundClock === 0 && !roundJustEnded) engine.endRoundOnTime();
   }
 });
+
+/** Fighter X positions as of the previous frame — the "before the hit" reading. */
+let lastFrameX: Record<Speaker, number> = { p1: 0, p2: 0 };
+
+/**
+ * Starts measuring one landed blow, and returns the world point where it
+ * connected: on the defender's chest, biased toward the attacker's fist.
+ */
+function beginContact(
+  kind: ContactRecord['kind'],
+  by: Speaker,
+  target: Speaker,
+  damage: number,
+  crit: boolean
+): Vector3 {
+  const attacker = rigs![by];
+  const defender = rigs![target];
+  const chest = defender.chestPosition();
+  const point = chest.clone().lerp(attacker.handPosition(), CONTACT_BIAS);
+
+  const record: ContactRecord = {
+    kind,
+    by,
+    target,
+    damage,
+    crit,
+    t: performance.now(),
+    gapAtEvent: Math.abs(attacker.worldPosition().x - defender.worldPosition().x),
+    minGap: Infinity,
+    minHandChest: Infinity,
+    targetXBefore: lastFrameX[target],
+    atRest:
+      Math.abs(defender.knockbackOffset()) < 0.1 && Math.abs(attacker.knockbackOffset()) < 0.1,
+    targetXAt150: null,
+    at150Since: null,
+    knockAt150: null,
+    peakKnockback: 0,
+    settledMs: null,
+    cameraPeak: 0
+  };
+  window.__pf.contacts.push(record);
+  openContacts.push({ record, deadline: record.t + CONTACT_WINDOW_MS });
+  return point;
+}
 // The arena render loop is pure spectacle — no game-logic path reads back from
-// it. `?fast=1` skips starting it: turn pacing and round decisions are driven
-// entirely by `sources/replay.ts`'s own timers and `runLoop`'s transcript-
-// exhaustion check, so the match still plays out correctly with nothing on
-// screen — the whole point of running the Playwright suite at machine speed
-// instead of racing a real WebGL frame budget.
-if (!FAST) stage.start();
+// it. `?fast=1` still skips the WebGL *draw* (racing a real frame budget under
+// a software rasteriser is what the fast path exists to avoid) but now runs the
+// same simulation step on a timer, so knockback, hit-stop, shake and the bone
+// positions the debug bridge reports are all live in an end-to-end run.
+if (FAST && !DRAW) stage.startSimulation();
+else stage.start();
 
 // --- stage picker --------------------------------------------------------
 
@@ -174,6 +424,12 @@ async function startMatch(file: string): Promise<void> {
   window.__pf.selection = matchup;
   window.__pf.events = [];
   window.__pf.matchEnded = false;
+  window.__pf.matchEndedAt = null;
+  window.__pf.koAt = null;
+  window.__pf.contacts = [];
+  openContacts.length = 0;
+  standingRootY.p1 = 0;
+  standingRootY.p2 = 0;
 
   const p1 = profileFor(matchup.p1.fighter);
   const p2 = profileFor(matchup.p2.fighter);
@@ -241,8 +497,15 @@ const handlers: StreamHandlers = {
 
     setTimeout(() => {
       if (!engine || engine.matchOver || !rigs) return;
-      rigs.p1.setPose('idle');
-      rigs.p2.setPose('idle');
+      // Return to the guard — but NEVER out of a knockdown or a victory pose.
+      // This reset used to be guarded only by `matchOver`, so a round-ending
+      // K.O. (which is not match-over) had its death animation wiped ~700ms
+      // later and the loser stood back up mid-count. `ko` and `win` are held
+      // until the next round explicitly clears them.
+      for (const side of ['p1', 'p2'] as const) {
+        if (TERMINAL_POSES.has(rigs[side].currentPose())) continue;
+        rigs[side].setPose('idle');
+      }
     }, RECOVERY_MS);
   }
 };
@@ -265,8 +528,13 @@ async function runLoop(): Promise<void> {
       sfx.bell();
       await sleep(ROUND_INTRO_MS);
       hud.announce('FIGHT!');
-      rigs?.p1.setPose('idle');
-      rigs?.p2.setPose('idle');
+      // Back to your corners: a fighter dropped at the end of the last round
+      // must be upright and back at neutral spacing before the next one starts,
+      // or the whole round is fought from wherever the K.O. left them.
+      for (const side of ['p1', 'p2'] as const) {
+        rigs?.[side].resetStance();
+        rigs?.[side].setPose('idle');
+      }
       continue;
     }
 
@@ -299,6 +567,31 @@ function syncBars(): void {
   hud.setMeter('p2', engine.state.p2.meter);
 }
 
+/**
+ * Poses that own the fighter until the match state itself changes. Nothing on
+ * the recovery path may overwrite them — a fighter that stands back up out of
+ * its own death animation is the single most immersion-breaking thing the
+ * renderer can do.
+ */
+const TERMINAL_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'win']);
+
+/**
+ * How far the contact point is pulled off the defender's chest toward the
+ * attacker's fist. 0 puts the burst inside the body, 1 puts it on the glove;
+ * a third of the way out reads as the moment of connection.
+ */
+const CONTACT_BIAS = 0.35;
+
+/** Baseline shove a landed blow imparts, before damage scaling, in world units. */
+const KNOCKBACK_BASE = 0.45;
+/** Extra shove per point of damage. */
+const KNOCKBACK_PER_DAMAGE = 0.022;
+/** Multiplier applied to a critical hit's shove. */
+const KNOCKBACK_CRIT = 1.6;
+
+/** How far a fighter steps in on its own strike (0-1, scaled in the rig). */
+const LUNGE_STRENGTH = 1;
+
 const LOUD_LABELS = new Set([
   'CITED EVIDENCE',
   'HONEST CORRECTION',
@@ -315,20 +608,36 @@ function handleEvent(event: CombatEvent): void {
 
   switch (event.type) {
     case 'attack': {
+      // Step in on the strike. The fighters used to stand a fixed 5.1 units
+      // apart for the whole match, so every punch was thrown into empty air —
+      // this, plus the tightened neutral spacing, is what makes a blow connect.
       rigs[event.by].setPose('attack');
+      rigs[event.by].lunge(LUNGE_STRENGTH);
       sfx.whoosh();
       if (LOUD_LABELS.has(event.label)) hud.announce(event.label);
       break;
     }
 
     case 'hit': {
+      const attacker: Speaker = event.target === 'p1' ? 'p2' : 'p1';
       const rig = rigs[event.target];
+      const point = beginContact('hit', attacker, event.target, event.damage, event.crit);
+
       rig.setPose(event.damage > 0 ? 'hurt' : 'idle');
       rig.flash(1);
-      stage.shake(event.crit ? 0.62 : 0.3);
-      stage.hitstop(event.crit ? 150 : 80);
-      stage.zoomPunch(event.crit ? 0.55 : 0.22);
-      fx.burst(rig.headPosition(), event.crit ? 0xff5470 : 0xffd166, event.crit ? 90 : 40, 6);
+      rig.knockback(
+        (KNOCKBACK_BASE + event.damage * KNOCKBACK_PER_DAMAGE) * (event.crit ? KNOCKBACK_CRIT : 1)
+      );
+
+      stage.shake(event.crit ? 0.85 : 0.5);
+      stage.hitstop(event.crit ? 160 : 90);
+      stage.zoomPunch(event.crit ? 0.7 : 0.3);
+
+      const color = event.crit ? 0xff5470 : 0xffd166;
+      fx.impactFlash(point, event.crit ? 0xffffff : color, event.crit ? 1.1 : 0.7);
+      fx.burst(point, color, event.crit ? 170 : 80, event.crit ? 9 : 6.5, {
+        size: event.crit ? 0.38 : 0.28
+      });
       fx.damageNumber(rig.headPosition(), event.damage, event.crit);
       event.crit ? sfx.crit() : sfx.hit();
       syncBars();
@@ -336,10 +645,17 @@ function handleEvent(event: CombatEvent): void {
     }
 
     case 'blocked': {
+      const attacker: Speaker = event.target === 'p1' ? 'p2' : 'p1';
       const rig = rigs[event.target];
+      const point = beginContact('hit', attacker, event.target, event.damage, false);
       rig.setPose('guard');
-      stage.shake(0.12);
-      fx.burst(rig.headPosition(), 0x6ee7ff, 18, 3);
+      // A guarded blow still shoves — less than a clean hit, which is what
+      // makes blocking read as absorbing something rather than ignoring it.
+      rig.knockback(0.42 + event.damage * 0.012);
+      stage.shake(0.25);
+      stage.hitstop(45);
+      fx.impactFlash(point, 0x6ee7ff, 0.6);
+      fx.burst(point, 0x6ee7ff, 34, 4, { size: 0.22 });
       fx.damageNumber(rig.headPosition(), event.damage, false);
       sfx.block();
       syncBars();
@@ -348,13 +664,19 @@ function handleEvent(event: CombatEvent): void {
 
     case 'counter': {
       hud.announce('COUNTER!');
+      const target: Speaker = event.by === 'p1' ? 'p2' : 'p1';
       rigs[event.by].setPose('attack');
-      const victim = rigs[event.by === 'p1' ? 'p2' : 'p1'];
+      rigs[event.by].lunge(LUNGE_STRENGTH);
+      const victim = rigs[target];
+      const point = beginContact('counter', event.by, target, event.damage, true);
       victim.setPose('hurt');
       victim.flash(1.4);
-      stage.shake(0.7);
-      stage.hitstop(170);
-      fx.burst(victim.headPosition(), 0xffffff, 80, 7);
+      victim.knockback(0.9 + event.damage * KNOCKBACK_PER_DAMAGE);
+      stage.shake(0.95);
+      stage.hitstop(190);
+      stage.zoomPunch(0.85);
+      fx.impactFlash(point, 0xffffff, 1.25);
+      fx.burst(point, 0xffffff, 150, 8.5, { size: 0.36 });
       fx.damageNumber(victim.headPosition(), event.damage, true);
       sfx.crit();
       syncBars();
@@ -379,14 +701,25 @@ function handleEvent(event: CombatEvent): void {
 
     case 'super': {
       hud.announce(event.name);
+      const target: Speaker = event.by === 'p1' ? 'p2' : 'p1';
       const attacker = rigs[event.by];
-      const victim = rigs[event.by === 'p1' ? 'p2' : 'p1'];
+      const victim = rigs[target];
+      attacker.setPose('attack');
+      attacker.lunge(1.25);
+      const point = beginContact('super', event.by, target, 0, true);
+      victim.setPose('hurt');
+      victim.flash(1.8);
+      victim.knockback(1.4);
       // The named-special FX carry their own themed burst/ring and shake the
       // stage themselves; only fall back to the generic treatment when this
       // super isn't one of the four catalogued moves.
-      const spec = fx.special(event.name, victim.headPosition(), attacker.headPosition());
-      if (!spec) stage.shake(1.1);
-      stage.hitstop(260);
+      const spec = fx.special(event.name, point, attacker.handPosition());
+      if (!spec) {
+        stage.shake(0.95);
+        fx.burst(point, 0xffffff, 180, 9, { size: 0.4 });
+      }
+      fx.impactFlash(point, 0xffffff, 1.6);
+      stage.hitstop(300);
       stage.zoomPunch(1.1);
       sfx.crit();
       break;
@@ -395,10 +728,11 @@ function handleEvent(event: CombatEvent): void {
     case 'ability': {
       const rig = rigs[event.by];
       hud.announce(event.name);
-      const spec = fx.special(event.name, rig.headPosition());
+      const spec = fx.special(event.name, rig.chestPosition());
       if (!spec) {
-        fx.burst(rig.headPosition(), 0xffe08a, 46, 5);
-        stage.shake(0.35);
+        fx.burst(rig.chestPosition(), 0xffe08a, 70, 5, { size: 0.26 });
+        fx.impactFlash(rig.chestPosition(), 0xffe08a, 1.1);
+        stage.shake(0.4);
       }
       sfx.hit();
       break;
@@ -407,10 +741,17 @@ function handleEvent(event: CombatEvent): void {
     case 'ko': {
       const winner: Speaker = event.loser === 'p1' ? 'p2' : 'p1';
       rigs[event.loser].setPose('ko');
+      // A knockdown throws the loser clear — the only moment worth a shove this
+      // big, and the visual difference between "lost the round" and "got dropped".
+      rigs[event.loser].knockback(1.1);
       rigs[winner].setPose('win');
       hud.announce('K.O.');
-      stage.shake(1.3);
-      stage.hitstop(320);
+      window.__pf.koAt = performance.now();
+      stage.shake(0.95);
+      stage.hitstop(340);
+      stage.zoomPunch(1.3);
+      fx.impactFlash(rigs[event.loser].chestPosition(), 0xffffff, 1.9);
+      fx.burst(rigs[event.loser].chestPosition(), 0xffd166, 200, 10, { size: 0.4, life: 1.1 });
       sfx.ko();
       syncBars();
       break;
@@ -426,6 +767,17 @@ function handleEvent(event: CombatEvent): void {
       fighting = false;
       source?.stop();
       window.__pf.matchEnded = true;
+      window.__pf.matchEndedAt = performance.now();
+
+      // The win/lose tableau: the winner celebrates, the loser stays down, and
+      // both hold for as long as the result card is up. Nothing clears these —
+      // `TERMINAL_POSES` keeps the recovery timer off them and the run loop has
+      // already stopped, so this is the last pose either fighter takes.
+      const loser: Speaker = event.winner === 'p1' ? 'p2' : 'p1';
+      rigs[event.winner].setPose('win');
+      rigs[loser].setPose('ko');
+      sfx.win();
+
       const name = engine.state[event.winner].name;
       resultTitle.textContent = event.winner === engine.state.playerSide ? 'YOU WIN' : 'YOU LOSE';
       resultSub.textContent = `${name} took the argument ${engine.state[event.winner].roundsWon}–${

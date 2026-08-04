@@ -207,18 +207,49 @@ body {
 .combo.left {
   left: clamp(12px, 5vw, 70px);
   color: var(--p1);
+  /* Grow inward. The escalation tiers scale up to 3x, and scaling about the
+     centre threw the leading digits clean off the left edge of the screen. */
+  transform-origin: left center;
 }
 .combo.right {
   right: clamp(12px, 5vw, 70px);
   color: var(--p2);
+  text-align: right;
+  transform-origin: right center;
 }
+/*
+ * Combo escalation. A 2-hit and a 7-hit used to render identically; the tiers
+ * below grow the counter, brighten it and shake it harder the longer the run
+ * goes, so a string of hits actually builds.
+ */
 .combo.pop {
-  animation: comboPop 0.5s ease-out;
+  animation: comboPop 0.62s cubic-bezier(0.15, 0.9, 0.25, 1);
+  text-shadow: 0 0 18px currentColor, 0 4px 0 #00000070;
+}
+.combo.tier-2 {
+  font-size: clamp(28px, 4.2vw, 52px);
+  color: #ffd166;
+  animation-name: comboPopBig;
+  animation-duration: 0.75s;
+}
+.combo.tier-3 {
+  font-size: clamp(34px, 5.4vw, 68px);
+  color: #fff;
+  text-shadow: 0 0 26px var(--crit), 0 0 60px var(--crit), 0 5px 0 #00000080;
+  animation-name: comboPopHuge;
+  animation-duration: 0.9s;
 }
 @keyframes comboPop {
   0% {
     opacity: 1;
-    transform: scale(1.5);
+    transform: scale(1.9) rotate(-3deg);
+  }
+  18% {
+    opacity: 1;
+    transform: scale(0.92) rotate(1deg);
+  }
+  32% {
+    transform: scale(1.08) rotate(-1deg);
   }
   70% {
     opacity: 1;
@@ -227,6 +258,57 @@ body {
   100% {
     opacity: 0;
     transform: scale(1);
+  }
+}
+@keyframes comboPopBig {
+  0% {
+    opacity: 1;
+    transform: scale(2.4) rotate(-6deg);
+  }
+  16% {
+    opacity: 1;
+    transform: scale(0.88) rotate(3deg);
+  }
+  28% {
+    transform: scale(1.2) rotate(-2deg);
+  }
+  40% {
+    transform: scale(1.02) rotate(1deg);
+  }
+  75% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.1);
+  }
+}
+@keyframes comboPopHuge {
+  0% {
+    opacity: 1;
+    transform: scale(3) rotate(-9deg);
+  }
+  14% {
+    opacity: 1;
+    transform: scale(0.85) rotate(5deg);
+  }
+  24% {
+    transform: scale(1.35) rotate(-4deg);
+  }
+  34% {
+    transform: scale(1) rotate(3deg);
+  }
+  44% {
+    transform: scale(1.18) rotate(-2deg);
+  }
+  80% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.25);
   }
 }
 

@@ -13,7 +13,7 @@ import type { FighterProfile } from '../fighters';
 import { FIGHTER_IDS } from '../engine/selection';
 import type { FighterId } from '../engine/selection';
 import { ABILITIES, abilitiesFor } from '../engine/abilities';
-import { createFighter } from './fighter';
+import { createFighter, NEUTRAL_HALF_SPACING } from './fighter';
 import type { FighterRig } from './fighter';
 
 const PREVIEW_WIDTH = 220;
@@ -66,11 +66,13 @@ function buildPreviewScene(profile: FighterProfile): {
   rim.position.set(-2.4, 4, -3);
   scene.add(rim);
 
-  // `createFighter` always plants its root group at x = side * 2.55 (see
-  // fighter.ts). A holder offset to the mirror-image +2.55 cancels that out so
-  // every preview is centered no matter which side the rig thinks it faces.
+  // `createFighter` plants its root group at `side * NEUTRAL_HALF_SPACING` (see
+  // fighter.ts). A holder offset to the mirror image of that cancels it out so
+  // every preview is centered no matter which side the rig thinks it faces —
+  // read from the constant rather than copied, because arena spacing is tuned
+  // for the fight and has moved before.
   const holder = new THREE.Group();
-  holder.position.x = 2.55;
+  holder.position.x = NEUTRAL_HALF_SPACING;
   const rig = createFighter(profile, -1);
   holder.add(rig.group);
   scene.add(holder);

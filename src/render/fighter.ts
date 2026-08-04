@@ -31,11 +31,41 @@ export type PoseName = 'idle' | 'windup' | 'attack' | 'guard' | 'hurt' | 'ko' | 
 export interface FighterRig {
   group: THREE.Group;
   setPose(pose: PoseName): void;
+  /** The pose currently held — lets callers avoid stomping `ko`/`win`. */
+  currentPose(): PoseName;
   setScreenText(text: string): void;
   setCharge(value: number): void;
   flash(intensity: number): void;
-  update(dt: number, elapsed: number): void;
+  /**
+   * `dt` is hit-stopped simulation time and drives the animation mixer;
+   * `real` (defaulting to `dt`) drives the positional lunge/knockback so a
+   * fighter still gets shoved during the freeze frame of an impact.
+   */
+  update(dt: number, elapsed: number, real?: number): void;
   headPosition(): THREE.Vector3;
+  /** World position of the striking (right) fist — where a punch actually is. */
+  handPosition(): THREE.Vector3;
+  /** World position of the chest — what a punch is aimed at. */
+  chestPosition(): THREE.Vector3;
+  /** World position of the hips/pelvis — drops toward the floor on a K.O. */
+  rootPosition(): THREE.Vector3;
+  /** Current world position of the whole fighter (neutral X plus any offset). */
+  worldPosition(): THREE.Vector3;
+  /** Neutral X this fighter recovers to. */
+  neutralX(): number;
+  /** Step in toward the opponent so a strike actually reaches: 0-1 scale. */
+  lunge(amount: number): void;
+  /** Get shoved away from the opponent, then spring back: world units. */
+  knockback(amount: number): void;
+  /**
+   * Current knockback displacement in world units, signed away from the
+   * opponent. Reported separately from `worldPosition` because a fighter's X
+   * is the sum of *two* independent motions — being shoved, and stepping in to
+   * throw its own next punch — and only the first is knockback.
+   */
+  knockbackOffset(): number;
+  /** Snap back to the neutral corner, cancelling any lunge or knockback. */
+  resetStance(): void;
 }
 
 /**
@@ -169,6 +199,16 @@ function findHeadBone(root: THREE.Object3D): THREE.Object3D | null {
   return exact ?? partial;
 }
 
+/** Finds a bone by exact (case-insensitive) name, e.g. `pelvis` or `spine_02`. */
+function findBone(root: THREE.Object3D, name: string): THREE.Object3D | null {
+  let found: THREE.Object3D | null = null;
+  root.traverse((obj) => {
+    if (found || !(obj as THREE.Bone).isBone) return;
+    if (obj.name.toLowerCase() === name) found = obj;
+  });
+  return found;
+}
+
 /**
  * Finds the rig's striking hand, used to anchor the punch trail.
  *
@@ -197,10 +237,64 @@ const TRAIL_POINTS = 14;
 /** Seconds a trail segment takes to fade out once the punch stops moving. */
 const TRAIL_FADE_S = 0.22;
 
+/**
+ * Neutral half-spacing: how far each fighter stands from the centre of the ring.
+ *
+ * This used to be 2.55 — a 5.1-unit gap, wider than either fighter is tall. Every
+ * punch landed in empty air while the other fighter flinched in the opposite
+ * corner. At 1.05 the pair stand a 2.1-unit gap apart; the vendored rig's fist
+ * reaches ~1.0 units past its own centre, so once the attacker steps in the
+ * glove lands on the opponent's chest. Both numbers were measured against the
+ * loaded rig (scripts/probe-reach.mjs), not guessed.
+ */
+export const NEUTRAL_HALF_SPACING = 1.05;
+
+/** How far a fighter steps in on a strike, in world units. */
+const LUNGE_DISTANCE = 0.85;
+/** Seconds the step-in takes to reach full extension. */
+const LUNGE_IN_S = 0.11;
+/** Seconds the fighter holds at full extension before recovering. */
+const LUNGE_HOLD_S = 0.1;
+/** Seconds to walk back out to neutral. */
+const LUNGE_OUT_S = 0.34;
+
+/**
+ * Knockback is a critically-damped spring back to neutral, kicked by an
+ * impulse. A fixed-length envelope was tried first and reads wrong the moment
+ * two blows overlap: restarting the curve snaps the fighter back toward centre
+ * before shoving it out again. A spring just takes the second impulse on top of
+ * whatever is left of the first, which is what a body actually does.
+ *
+ * `KNOCK_OMEGA` is the spring's natural frequency in rad/s: peak displacement
+ * lands ~1/omega seconds after the hit and the fighter is home well inside a
+ * second.
+ */
+const KNOCK_OMEGA = 9;
+/** World units per second of velocity per unit of requested knockback. */
+const KNOCK_IMPULSE = 16;
+
+/** Smoothstep, used to ease the recovery legs of lunge/knockback. */
+function smoothstep(t: number): number {
+  const x = Math.max(0, Math.min(1, t));
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * The step-in envelope: snap in, hold at the point of contact, walk back out.
+ * Returns 0-1, where 1 is fully committed toward the opponent.
+ */
+function lungeEnvelope(t: number): number {
+  if (t <= 0) return 0;
+  if (t < LUNGE_IN_S) return smoothstep(t / LUNGE_IN_S);
+  if (t < LUNGE_IN_S + LUNGE_HOLD_S) return 1;
+  const out = (t - LUNGE_IN_S - LUNGE_HOLD_S) / LUNGE_OUT_S;
+  return out >= 1 ? 0 : 1 - smoothstep(out);
+}
+
 const gltfLoader = new GLTFLoader();
 
 export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig {
-  const baseX = side * 2.55;
+  const baseX = side * NEUTRAL_HALF_SPACING;
   const visual = profile.visual;
   const character = characterFor(profile.name);
 
@@ -227,7 +321,22 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let currentAction: THREE.AnimationAction | null = null;
   let headBone: THREE.Object3D | null = null;
   let handBone: THREE.Object3D | null = null;
+  /** Both fists, so `handPosition` can report whichever one is actually thrown. */
+  let handBones: THREE.Object3D[] = [];
+  let chestBone: THREE.Object3D | null = null;
+  let hipBone: THREE.Object3D | null = null;
   const tintedMaterials: THREE.MeshStandardMaterial[] = [];
+
+  // --- footwork -----------------------------------------------------------
+  //
+  // The fighter's X is `baseX` plus two independent, self-recovering offsets:
+  // a step-in on its own strike and a shove on a strike it eats. Both are
+  // signed toward/away from the opponent (which is always across the origin,
+  // so "toward the opponent" is simply `-side`).
+  let lungeTime = Infinity;
+  let lungeScale = 0;
+  let knockOffset = 0;
+  let knockVelocity = 0;
 
   // --- punch trail --------------------------------------------------------
   //
@@ -285,10 +394,15 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     nextAction.play();
     if (currentAction && currentAction !== nextAction) {
       currentAction.crossFadeTo(nextAction, POSE_BLEND[pose], false);
-    } else if (currentAction === nextAction) {
-      // Re-triggering the pose that is already playing (jab, jab) — restart it
-      // from the top rather than letting the clamped action sit finished.
-      nextAction.fadeIn(POSE_BLEND[pose]);
+    } else {
+      // Re-triggering the clip that is already playing — `windup` and `attack`
+      // both use `Punch_Jab`, so this is the common path into a punch, not an
+      // edge case. Snap it back to full weight instead of fading in from zero:
+      // `reset()` leaves whatever weight the last fade left behind, and fading
+      // 0 -> 1 on the *only* action playing drops the skeleton to its bind pose
+      // for the length of the blend. That is the arms-out T-pose that flashed
+      // on screen at the start of every other strike.
+      nextAction.setEffectiveWeight(1);
     }
     currentAction = nextAction;
     // A frozen pose seeks to its held frame and stops there. `update` still runs
@@ -337,6 +451,13 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       model.add(scene);
       headBone = findHeadBone(scene);
       handBone = findHandBone(scene);
+      // Unreal-named skeleton: `spine_03` sits at sternum height and `pelvis` is
+      // the hip root that `Death01` drives to the floor.
+      handBones = [findBone(scene, 'hand_r'), findBone(scene, 'hand_l')].filter(
+        (bone): bone is THREE.Object3D => bone !== null
+      );
+      chestBone = findBone(scene, 'spine_03') ?? findBone(scene, 'spine_02') ?? headBone;
+      hipBone = findBone(scene, 'pelvis') ?? findBone(scene, 'root');
 
       mixer = new THREE.AnimationMixer(scene);
 
@@ -471,6 +592,13 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let flashAmount = 0;
   const headWorld = new THREE.Vector3();
   const handWorld = new THREE.Vector3();
+  const handLead = new THREE.Vector3();
+
+  /** World position of `bone`, or `fallback` (a local-space y offset) if unloaded. */
+  function boneWorld(bone: THREE.Object3D | null, fallbackY: number): THREE.Vector3 {
+    if (bone) return bone.getWorldPosition(new THREE.Vector3());
+    return group.localToWorld(new THREE.Vector3(0, fallbackY / character.modelScale, 0));
+  }
 
   return {
     group,
@@ -483,6 +611,10 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
         trailPrimed = false;
       }
       applyPose(pose);
+    },
+
+    currentPose() {
+      return pendingPose;
     },
 
     setScreenText(text) {
@@ -507,7 +639,94 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       return sprite.getWorldPosition(new THREE.Vector3());
     },
 
-    update(dt, _elapsed) {
+    handPosition() {
+      // Whichever fist is furthest toward the opponent. `attack` alternates
+      // `Punch_Jab` and `Punch_Cross` and they do NOT lead with the same hand,
+      // so always reporting `hand_r` said "the punch fell half a metre short"
+      // on every other strike — when the other glove was on the chest.
+      if (handBones.length) {
+        let lead = handBones[0]!;
+        let best = Infinity;
+        for (const bone of handBones) {
+          const x = side * bone.getWorldPosition(handLead).x;
+          if (x < best) {
+            best = x;
+            lead = bone;
+          }
+        }
+        return lead.getWorldPosition(new THREE.Vector3());
+      }
+      return boneWorld(handBone, 1.9);
+    },
+
+    chestPosition() {
+      return boneWorld(chestBone, 2.35);
+    },
+
+    rootPosition() {
+      return boneWorld(hipBone, 1.55);
+    },
+
+    worldPosition() {
+      return group.getWorldPosition(new THREE.Vector3());
+    },
+
+    neutralX() {
+      return baseX;
+    },
+
+    lunge(amount) {
+      lungeScale = Math.max(0, amount);
+      lungeTime = 0;
+    },
+
+    knockback(amount) {
+      // Impulse, not a reset: a crit landing on a fighter still reeling from a
+      // jab shoves it further out rather than yanking it back to centre first.
+      knockVelocity += side * amount * KNOCK_IMPULSE;
+    },
+
+    knockbackOffset() {
+      return knockOffset;
+    },
+
+    resetStance() {
+      lungeTime = Infinity;
+      lungeScale = 0;
+      knockOffset = 0;
+      knockVelocity = 0;
+      group.position.x = baseX;
+    },
+
+    update(dt, _elapsed, real) {
+      // Footwork runs on REAL time so a fighter still gets blown back during the
+      // hit-stop freeze — that shove IS the impact, and freezing it out is what
+      // made a 20-damage crit look identical to a whiff.
+      const realDt = real ?? dt;
+      if (lungeTime < Infinity) {
+        lungeTime += realDt;
+        if (lungeTime > LUNGE_IN_S + LUNGE_HOLD_S + LUNGE_OUT_S) lungeTime = Infinity;
+      }
+      if (knockOffset !== 0 || knockVelocity !== 0) {
+        // Closed-form step of the critically-damped spring, not Euler. Euler
+        // with the frame deltas this app actually sees (up to the 50ms clamp,
+        // and the `?fast=1` simulation loop competes with a busy main thread)
+        // damps `2*omega*v*dt` clean through zero, and the knockback died in two
+        // frames. The analytic solution is correct at any dt.
+        const decay = Math.exp(-KNOCK_OMEGA * realDt);
+        const slope = knockVelocity + KNOCK_OMEGA * knockOffset;
+        const next = (knockOffset + slope * realDt) * decay;
+        knockVelocity = (slope - KNOCK_OMEGA * (knockOffset + slope * realDt)) * decay;
+        knockOffset = next;
+        if (Math.abs(knockOffset) < 1e-4 && Math.abs(knockVelocity) < 1e-3) {
+          knockOffset = 0;
+          knockVelocity = 0;
+        }
+      }
+      const lungeOffset =
+        lungeTime === Infinity ? 0 : -side * LUNGE_DISTANCE * lungeScale * lungeEnvelope(lungeTime);
+      group.position.x = baseX + lungeOffset + knockOffset;
+
       if (mixer) mixer.update(dt);
       // Pin a frozen pose to its held frame every tick: the mixer keeps running
       // so the crossfade into it finishes, but the clip itself never advances.
@@ -547,7 +766,9 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
         sprite.position.copy(headWorld);
       }
 
-      flashAmount *= 0.86;
+      // Time-based, like the camera shake — a per-frame multiplier made the
+      // hit flash last four times longer on a slow machine than a fast one.
+      flashAmount *= Math.pow(0.5, realDt / 0.07);
       for (const material of tintedMaterials) {
         material.emissiveIntensity = BASE_EMISSIVE_INTENSITY + charge * 0.85 + flashAmount;
       }

@@ -20,6 +20,31 @@ interface Burst {
   maxLife: number;
 }
 
+/** A short, bright additive blob at the point of contact. */
+interface Flash {
+  mesh: THREE.Mesh;
+  life: number;
+  maxLife: number;
+  startScale: number;
+  endScale: number;
+}
+
+/**
+ * Default particle size for an impact burst.
+ *
+ * The previous 0.16 was tuned when a "hit" was a puff next to a fighter's head
+ * five units from the punch. At the point of contact it has to carry the whole
+ * impact, so it is both larger and (via `burst`'s options) scalable per event.
+ */
+const BURST_PARTICLE_SIZE = 0.3;
+
+export interface BurstOptions {
+  /** Particle size in world units. */
+  size?: number;
+  /** Seconds the burst lives. */
+  life?: number;
+}
+
 interface Ring {
   mesh: THREE.Mesh;
   life: number;
@@ -134,7 +159,12 @@ interface ActiveSpecial {
 }
 
 export interface Fx {
-  burst(position: THREE.Vector3, color: number, count: number, power: number): void;
+  burst(position: THREE.Vector3, color: number, count: number, power: number, options?: BurstOptions): void;
+  /**
+   * A brief additive bloom at the point of contact. Particles alone read as
+   * sparks scattering; the flash is what says *something just connected here*.
+   */
+  impactFlash(position: THREE.Vector3, color: number, radius: number): void;
   damageNumber(position: THREE.Vector3, amount: number, crit: boolean): void;
   /** Spawns the named special's themed FX at `targetPosition` (and, when given,
    * a smaller directional cue burst at `sourcePosition`), shakes the stage
@@ -151,9 +181,17 @@ export interface Fx {
 export function createFx(stage: Stage, layer: HTMLElement): Fx {
   const bursts: Burst[] = [];
   const rings: Ring[] = [];
+  const flashes: Flash[] = [];
   const activeSpecials: ActiveSpecial[] = [];
 
-  function spawnBurst(position: THREE.Vector3, color: number, count: number, power: number, maxLife: number): void {
+  function spawnBurst(
+    position: THREE.Vector3,
+    color: number,
+    count: number,
+    power: number,
+    maxLife: number,
+    size = BURST_PARTICLE_SIZE
+  ): void {
     const positions = new Float32Array(count * 3);
     const velocities: THREE.Vector3[] = [];
 
@@ -177,7 +215,7 @@ export function createFx(stage: Stage, layer: HTMLElement): Fx {
       geometry,
       new THREE.PointsMaterial({
         color,
-        size: 0.16,
+        size,
         transparent: true,
         opacity: 1,
         blending: THREE.AdditiveBlending,
@@ -213,9 +251,30 @@ export function createFx(stage: Stage, layer: HTMLElement): Fx {
     rings.push({ mesh, life: 0, maxLife, startScale, endScale });
   }
 
+  function spawnFlash(position: THREE.Vector3, color: number, radius: number): void {
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 12, 10),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 1,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      })
+    );
+    mesh.position.copy(position);
+    mesh.scale.setScalar(radius * 0.35);
+    stage.add(mesh);
+    flashes.push({ mesh, life: 0, maxLife: 0.18, startScale: radius * 0.35, endScale: radius });
+  }
+
   return {
-    burst(position, color, count, power) {
-      spawnBurst(position, color, count, power, 0.65);
+    burst(position, color, count, power, options) {
+      spawnBurst(position, color, count, power, options?.life ?? 0.65, options?.size);
+    },
+
+    impactFlash(position, color, radius) {
+      spawnFlash(position, color, radius);
     },
 
     damageNumber(position, amount, crit) {
@@ -233,7 +292,8 @@ export function createFx(stage: Stage, layer: HTMLElement): Fx {
       const spec = specialFxFor(move);
       if (!spec) return null;
 
-      spawnBurst(targetPosition, spec.color, spec.particleCount, 7, spec.durationS);
+      spawnBurst(targetPosition, spec.color, spec.particleCount, 7, spec.durationS, 0.34);
+      spawnFlash(targetPosition, 0xffffff, 1.4);
       for (let r = 0; r < spec.ringCount; r++) {
         const stagger = r * 0.12;
         spawnRing(targetPosition, spec.color, spec.durationS - stagger, 0.4 + r * 0.3, 3.4 + r * 1.1);
@@ -304,6 +364,24 @@ export function createFx(stage: Stage, layer: HTMLElement): Fx {
           ring.mesh.geometry.dispose();
           material.dispose();
           rings.splice(i, 1);
+        }
+      }
+
+      for (let i = flashes.length - 1; i >= 0; i--) {
+        const flash = flashes[i]!;
+        flash.life += dt;
+
+        const t = Math.min(1, flash.life / flash.maxLife);
+        flash.mesh.scale.setScalar(flash.startScale + (flash.endScale - flash.startScale) * t);
+
+        const material = flash.mesh.material as THREE.MeshBasicMaterial;
+        material.opacity = Math.max(0, 1 - t * t);
+
+        if (flash.life >= flash.maxLife) {
+          flash.mesh.removeFromParent();
+          flash.mesh.geometry.dispose();
+          material.dispose();
+          flashes.splice(i, 1);
         }
       }
 
