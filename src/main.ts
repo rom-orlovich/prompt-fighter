@@ -188,6 +188,14 @@ interface DebugBridge {
   /** Runs a bundled transcript through the engine with no rendering, no timers
    * and no player input — the fastest way to inspect a deterministic outcome. */
   simulate(file: string): Promise<SimulateResult>;
+  /**
+   * Counts every `THREE.Sprite` currently in the arena scene graph (G13). The
+   * fighters used to each own a screen-space billboard sprite that floated
+   * above their head — this stayed at 0 once it was removed, which is what
+   * `e2e/fight-feel.test.ts` asserts against a live match instead of hoping
+   * nothing re-introduces a head-occluding sprite later.
+   */
+  spriteCount(): number;
 }
 
 declare global {
@@ -237,6 +245,13 @@ window.__pf = {
   async simulate(file) {
     const transcript = await loadTranscript(`${import.meta.env.BASE_URL}transcripts/${file}`);
     return simulateTranscript(transcript);
+  },
+  spriteCount() {
+    let count = 0;
+    stage.scene.traverse((object) => {
+      if ((object as { isSprite?: boolean }).isSprite) count += 1;
+    });
+    return count;
   }
 };
 
@@ -489,13 +504,11 @@ const handlers: StreamHandlers = {
   onTurnStart(speaker) {
     if (!rigs) return;
     rigs[speaker].setPose('windup');
-    rigs[speaker].setScreenText('');
     hud.openActionWindow();
   },
 
   onTurnChunk(speaker, textSoFar) {
     if (!rigs || !engine) return;
-    rigs[speaker].setScreenText(textSoFar);
     rigs[speaker].setCharge(Math.min(1, textSoFar.split(' ').length / 45));
     hud.subtitle(engine.state[speaker].name, colorOf(speaker), textSoFar);
   },

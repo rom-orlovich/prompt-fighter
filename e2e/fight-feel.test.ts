@@ -155,6 +155,44 @@ test.describe('fight feel', () => {
     expect(errors).toEqual([]);
   });
 
+  // --- G13: the streaming-text billboard must not cover the fighters -------
+  //
+  // The in-world CRT billboard used to float above each fighter's head bone,
+  // repositioned there every frame. It sat ON the heads once the arena
+  // spacing was tightened (see G1 above), the two fighters' panels overlapped
+  // each other mid-exchange, and the same streaming text was already fully
+  // legible in the HUD subtitle bar (`hud.subtitle`, driven by the same
+  // `onTurnChunk` callback) — so it was removed outright (route B) rather
+  // than relocated: `src/render/fighter.ts` no longer creates a sprite at
+  // all. `window.__pf.spriteCount()` counts every `THREE.Sprite` live in the
+  // arena scene graph; this samples it at several moments across a real,
+  // undriven match and asserts it never leaves zero, so a billboard sprite
+  // (on a head or anywhere else) reappearing fails this spec instead of
+  // shipping unnoticed.
+  test('no billboard sprite exists in the arena scene at any point in a real match', async ({
+    page
+  }) => {
+    test.setTimeout(180000);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+
+    await startMatch(page, FIGHT);
+
+    const samples: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      samples.push(await page.evaluate(() => (window as any).__pf.spriteCount()));
+      if (await page.evaluate(() => (window as any).__pf.matchEnded)) break;
+      await page.waitForTimeout(400);
+    }
+
+    expect(samples.length, 'sampled at several distinct moments').toBeGreaterThan(3);
+    for (const count of samples) {
+      expect(count, 'THREE.Sprite objects in the arena scene').toBe(0);
+    }
+
+    expect(errors).toEqual([]);
+  });
+
   test('the K.O. loser stays on the ground instead of standing back up', async ({ page }) => {
     test.setTimeout(120000);
     const errors: string[] = [];

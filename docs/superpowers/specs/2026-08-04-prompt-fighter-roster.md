@@ -67,7 +67,8 @@ live-rendered preview cards** — one per roster fighter, each running the actua
 `createFighter` rig from `render/fighter.ts`, not a screenshot:
 
 - Each card owns its own throwaway `THREE.Scene` + `PerspectiveCamera` + the real fighter
-  rig, posed `idle` with the fighter's own name on its CRT/screen texture.
+  rig, posed `idle`. The fighter's name is printed in the card's own DOM label underneath
+  the preview, not on an in-world screen texture — see G13 below.
 - All four cards share **one** `requestAnimationFrame` loop — four live WebGL previews cost
   one rAF callback, not four — and that loop skips rendering entirely once the select
   screen is hidden behind the title screen (`container.offsetParent === null`), so idle
@@ -222,10 +223,23 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
   inside two frames; the streak is what makes it legible as a strike. The hand bone is
   matched by *suffix* (`DEF-hand.R`) — an exact-name match silently fell through to the
   first bone merely containing "hand", which is the left one.
-- The CRT/terminal streaming-text billboard survives unchanged in spirit: a
-  canvas-textured plane that renders the model's actual streaming reply with a blinking
-  cursor. It stops being the fighter's *head* (there is now a real head bone) and becomes
-  a camera-facing billboard floated above it instead.
+- **The CRT/terminal streaming-text billboard was removed (G13).** It first stopped being
+  the fighter's *head* (there is now a real head bone) and became a camera-facing plane
+  floated above it instead — but once arena spacing tightened enough for fighters to
+  actually close distance and trade blows, that floating plane started sitting on top of
+  the fighters' own heads, and the two fighters' billboards overlapped each other
+  mid-exchange. It was also pure redundancy: the HUD subtitle strip (`hud.subtitle`, fed by
+  the same `onTurnChunk` stream) already rendered the identical streaming text, larger and
+  legibly, at the same instant, and the select-screen card's own DOM label already printed
+  the fighter's name. Route considered and rejected: relocating the billboard to a
+  guaranteed-clear spot (e.g. the arena's outer corners) with anti-overlap clamping — this
+  would have kept a moving, camera-facing rectangle whose only content duplicated
+  information already on screen, for the ongoing cost of proving two independently
+  animated sprites never intersect each other or either fighter. Deleting the sprite
+  outright is simpler to keep correct forever: there is nothing left that could reoccupy a
+  fighter's head. `createFighter` no longer builds a canvas, texture or `THREE.Sprite` for
+  a fighter, `FighterRig.setScreenText` no longer exists, and the streaming reply now has
+  exactly one on-screen home: the subtitle strip.
 
 ### Trim-for-size pipeline
 

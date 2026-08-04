@@ -142,10 +142,17 @@ fighters share one rig; brand color is applied by material tinting on the base m
 per fighter and recolored to its brand hue with an emissive rim — rather than by swapping
 geometry, and per-fighter height and build keep the silhouettes apart.
 
-The streaming-text feature survives from the earlier procedural design: a canvas-textured
-plane renders the model's actual streaming text with a blinking cursor, but it is now a
-camera-facing billboard floated above the head bone of the humanoid rig, rather than being
-the head itself.
+**Streaming text (revised, G13).** The original design floated a canvas-textured,
+camera-facing billboard above the humanoid rig's head, streaming the model's reply with a
+blinking cursor — descended from an even earlier design where the billboard *was* the
+fighter's head. Once the arena spacing tightened enough for fighters to actually trade blows
+(see §2), that billboard started sitting on top of the fighters' own heads and, mid-exchange,
+overlapping the opponent's billboard in the middle of the screen — and it was showing nothing
+the HUD's own subtitle strip (`hud.ts`, driven by the same `onTurnChunk` stream) wasn't already
+rendering larger and more legibly at the same moment. It was removed outright rather than
+relocated: the subtitle strip is now the one place the streaming reply appears, and the
+character-select card's own name label absorbed the billboard's other job of identifying the
+fighter. `src/render/fighter.ts` no longer creates a sprite of any kind.
 
 Asset policy is scoped, not asset-free: CC0-licensed low-poly humanoid assets are permitted
 for fighter models; no proprietary or attribution-required assets. This keeps the public repo

@@ -26,7 +26,7 @@ const PREVIEW_FOV = 40;
  * card keeps headroom above the hair and footroom below the floor instead of
  * cropping either edge.
  */
-const PREVIEW_FIT = 0.82;
+const PREVIEW_FIT = 0.9;
 
 /**
  * Solves the camera placement that fits a fighter's measured `[bottom, top]`
@@ -173,7 +173,6 @@ export function createSelectScreen(container: HTMLElement, options: SelectScreen
 
     const { scene, camera, rig } = buildPreviewScene(profile);
     rig.setPose('idle');
-    rig.setScreenText(profile.name);
 
     cards.push({ name, button, renderer, scene, camera, rig, framed: false });
   }

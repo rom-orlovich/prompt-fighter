@@ -1,6 +1,5 @@
 /**
- * A fighter is a real, realistically-proportioned character model with a
- * floating terminal-text billboard hovering above its head.
+ * A fighter is a real, realistically-proportioned character model.
  *
  * Three vendored assets combine into one fighter, all sharing a single skeleton
  * (Quaternius, CC0): a **body** mesh, a **hairstyle** rigged to that same
@@ -15,10 +14,14 @@
  * inside `group` once the fetch resolves. Callers (`main.ts`, `select.ts`)
  * never know or care whether the model has finished loading yet.
  *
- * The billboard sprite reuses the original CRT canvas-texture logic — same
- * `paint()`/`wrap()` — but is now a `THREE.Sprite` (always faces the camera,
- * no manual yaw needed) repositioned every frame to float just above the
- * model's actual `head` bone, instead of being the fighter's head itself.
+ * A fighter used to carry a camera-facing CRT billboard hovering above its
+ * head, streaming the model's reply as canvas text (G13 removed it). The HUD
+ * subtitle bar already renders the exact same streaming text, larger and at
+ * the same moment, and the billboard's only other job — printing a name — is
+ * already handled by the label under each character-select card. A second,
+ * moving copy of the same text in-world bought nothing but a sprite that could
+ * (and, once footwork closed the gap between fighters, did) land on top of a
+ * fighter's own head or the opponent's sprite.
  */
 
 import * as THREE from 'three';
@@ -33,7 +36,6 @@ export interface FighterRig {
   setPose(pose: PoseName): void;
   /** The pose currently held — lets callers avoid stomping `ko`/`win`. */
   currentPose(): PoseName;
-  setScreenText(text: string): void;
   setCharge(value: number): void;
   flash(intensity: number): void;
   /**
@@ -186,33 +188,20 @@ function facingFor(side: -1 | 1): number {
   return side * (FACING_CAMERA_BIAS - FACING_QUARTER);
 }
 
-/** World-unit height the streaming-text billboard floats above the head bone. */
-const BILLBOARD_HEAD_OFFSET = 0.5;
+/**
+ * World-unit height `headPosition()` reports above the actual head bone, so a
+ * floating damage number reads as coming from over the fighter's head instead
+ * of from inside its skull. Formerly also where the streaming-text billboard
+ * floated (G13 removed the billboard; this offset survives for the damage
+ * numbers alone).
+ */
+const HEAD_MARKER_OFFSET = 0.5;
 
 /** Base emissive glow applied to every tinted material before charge/flash heat it up. */
 const BASE_EMISSIVE_INTENSITY = 0.3;
 
 /** Hair reads as hair, not as brand paint — it stays dark on every fighter. */
 const HAIR_COLOR = 0x23232b;
-
-function hex(color: number): string {
-  return `#${color.toString(16).padStart(6, '0')}`;
-}
-
-function wrap(text: string, charsPerLine: number): string[] {
-  const lines: string[] = [];
-  let line = '';
-  for (const word of text.split(/\s+/)) {
-    if ((line + ' ' + word).trim().length > charsPerLine) {
-      if (line) lines.push(line);
-      line = word;
-    } else {
-      line = line ? `${line} ${word}` : word;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
-}
 
 /** Finds the rig's head joint — the vendored bodies name it exactly `Head`. */
 function findHeadBone(root: THREE.Object3D): THREE.Object3D | null {
@@ -323,15 +312,13 @@ const gltfLoader = new GLTFLoader();
 
 export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig {
   const baseX = side * NEUTRAL_HALF_SPACING;
-  const visual = profile.visual;
   const character = characterFor(profile.name);
 
   const group = new THREE.Group();
   group.position.set(baseX, 0, 0);
   // Height from `modelScale`, build from `bulk` — the free asset tier ships two
   // bodies for four fighters, so width/depth is part of what keeps a heavyweight
-  // from reading exactly like a featherweight. The sprite below divides
-  // `modelScale` back out.
+  // from reading exactly like a featherweight.
   group.scale.set(
     character.modelScale * character.bulk,
     character.modelScale,
@@ -569,78 +556,10 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     },
     undefined,
     () => {
-      // A missing/broken model asset must never break the rig — the billboard
-      // (and the rest of the match) keeps working with no body attached.
+      // A missing/broken model asset must never break the rig — the rest of
+      // the match keeps working with no body attached.
     }
   );
-
-  // --- the floating streaming-text billboard ------------------------------
-
-  const screenW = visual.screenSize[0];
-  const screenH = visual.screenSize[1];
-  const maxLines = Math.max(3, Math.round(6 * (screenH / 400)));
-  const charsPerLine = Math.max(10, Math.round(30 * (screenW / 640)));
-
-  const canvas = document.createElement('canvas');
-  canvas.width = screenW;
-  canvas.height = screenH;
-  const ctx = canvas.getContext('2d')!;
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-
-  const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
-  const sprite = new THREE.Sprite(spriteMaterial);
-  // World-unit size the billboard should read at, regardless of this fighter's
-  // model scale — divide out `character.modelScale` since the sprite is a
-  // child of `group`, which already carries that scale.
-  const worldW = 2.15 * (screenW / 640);
-  const worldH = 1.34 * (screenH / 400);
-  // `group` carries a non-uniform scale (bulk on x/z, plain scale on y), so the
-  // billboard divides each axis back out or a heavyweight's text reads stretched.
-  sprite.scale.set(
-    worldW / (character.modelScale * character.bulk),
-    worldH / character.modelScale,
-    1
-  );
-  // Fallback position (roughly head height) until the real head bone loads.
-  sprite.position.set(0, 3.12 / character.modelScale, 0);
-  group.add(sprite);
-
-  let currentText = '';
-  let redraw = true;
-  let blinkOn = true;
-  let blinkTimer = 0;
-
-  function paint(): void {
-    ctx.fillStyle = '#040810';
-    ctx.fillRect(0, 0, screenW, screenH);
-
-    ctx.fillStyle = hex(visual.color);
-    ctx.fillRect(0, 0, screenW, 52);
-    ctx.fillStyle = '#040810';
-    ctx.font = 'bold 28px ui-monospace, Menlo, Consolas, monospace';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`▌${profile.name}`, 16, 27);
-    ctx.fillText('— □ ×', screenW - 130, 27);
-
-    ctx.font = '24px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillStyle = hex(visual.accent);
-    const lines = wrap(currentText, charsPerLine).slice(-maxLines);
-    lines.forEach((line, i) => ctx.fillText(line, 16, 92 + i * 34));
-
-    if (blinkOn) {
-      const last = lines[lines.length - 1] ?? '';
-      const cursorX = 16 + ctx.measureText(last).width + 6;
-      const cursorY = 92 + Math.max(0, lines.length - 1) * 34;
-      ctx.fillRect(cursorX, cursorY - 12, 13, 25);
-    }
-
-    ctx.fillStyle = 'rgba(0,0,0,0.2)';
-    for (let y = 52; y < screenH; y += 4) ctx.fillRect(0, y, screenW, 2);
-
-    texture.needsUpdate = true;
-  }
-  paint();
 
   // --- state ---------------------------------------------------------------
 
@@ -676,11 +595,6 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       return pendingPose;
     },
 
-    setScreenText(text) {
-      currentText = text;
-      redraw = true;
-    },
-
     setCharge(value) {
       charge = Math.max(0, Math.min(1, value));
     },
@@ -692,10 +606,13 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     headPosition() {
       if (headBone) {
         headBone.getWorldPosition(headWorld);
-        headWorld.y += BILLBOARD_HEAD_OFFSET;
+        headWorld.y += HEAD_MARKER_OFFSET;
         return headWorld.clone();
       }
-      return sprite.getWorldPosition(new THREE.Vector3());
+      // Before the body has loaded there is no head bone yet — fall back to
+      // roughly head height, the same convention `boneWorld` uses for the
+      // hand/chest/hip bones below.
+      return boneWorld(null, 3.12);
     },
 
     handPosition() {
@@ -733,8 +650,8 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     measuredBounds() {
       if (!bodyLoaded || !hairSettled) return null;
       // `model` holds only the loaded body scene (and the hair rebound onto it,
-      // see above) — never the sprite/trail, which would otherwise pull the box
-      // up over the head or out toward the fist. `updateWorldMatrix(true, false)`
+      // see above) — never the punch trail, which would otherwise pull the box
+      // out toward the fist. `updateWorldMatrix(true, false)`
       // forces the whole ancestor chain (group -> holder -> scene) current first,
       // matching the pattern already used by `boneWorld`/`getWorldPosition`
       // above, so this is correct regardless of whether a render happened yet.
@@ -870,29 +787,11 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
         trailPrimed = false;
       }
 
-      if (headBone) {
-        headBone.getWorldPosition(headWorld);
-        headWorld.y += BILLBOARD_HEAD_OFFSET;
-        group.worldToLocal(headWorld);
-        sprite.position.copy(headWorld);
-      }
-
       // Time-based, like the camera shake — a per-frame multiplier made the
       // hit flash last four times longer on a slow machine than a fast one.
       flashAmount *= Math.pow(0.5, realDt / 0.07);
       for (const material of tintedMaterials) {
         material.emissiveIntensity = BASE_EMISSIVE_INTENSITY + charge * 0.85 + flashAmount;
-      }
-
-      blinkTimer += dt;
-      if (blinkTimer > 0.45) {
-        blinkTimer = 0;
-        blinkOn = !blinkOn;
-        redraw = true;
-      }
-      if (redraw) {
-        redraw = false;
-        paint();
       }
     }
   };
