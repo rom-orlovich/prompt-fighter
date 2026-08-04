@@ -39,8 +39,16 @@ const SHAKE_FREQUENCY = 62;
  * a 9 would throw the camera nine units sideways — past the fighters entirely.
  * The clamp lets callers keep passing intensities while the camera stays in the
  * arena.
+ *
+ * Raised from the original 0.95 for G14 (`comboScale` in `main.ts`): a crit's
+ * own base shake is already 0.85, so the old cap left almost no headroom for
+ * a crit landing deep in a combo to escalate at all — streak 3 and streak 1
+ * crits were clamping to nearly the same value. This is still very much a
+ * ceiling — a crit at the streak-5 cap asks for 0.85 × 3.0 = 2.55 and still
+ * gets clipped here — it just now engages at the top of the escalation curve
+ * instead of muting the middle of it.
  */
-const MAX_SHAKE = 0.95;
+const MAX_SHAKE = 1.6;
 
 export interface Stage {
   scene: THREE.Scene;
@@ -69,6 +77,25 @@ export interface Stage {
   worldToScreen(position: THREE.Vector3): { x: number; y: number };
   setFighterColors(left: number, right: number): void;
   zoomPunch(amount: number): void;
+  /**
+   * The current shake/zoom envelope's magnitude — the deterministic amplitude
+   * `camera.position` is oscillating and jittering within, with the ~62rad/s
+   * oscillation phase and the per-frame `Math.random()` jitter both stripped
+   * out (G14).
+   *
+   * `window.__pf.contacts[i].cameraPeak` used to sample raw `camera.position`
+   * every rendered frame and keep the max — which meant catching the actual
+   * peak depended on a render happening to land near a sin-wave crest inside
+   * a ~100ms oscillation period. Fine at 60fps; under real contention
+   * (parallel headed browsers competing for one GPU) frames get sparse enough
+   * that a genuinely bigger, escalated blow could still get under-sampled and
+   * read as smaller than an easier, earlier one — the escalation is real but
+   * the measurement of it was frame-rate luck. This envelope is set
+   * synchronously by `shake()`/`zoomPunch()` and decays smoothly, so even a
+   * single sample shortly after an impact reads close to the true peak,
+   * independent of how many frames actually rendered in between.
+   */
+  shakeIntensity(): number;
 }
 
 export function createStage(canvas: HTMLCanvasElement): Stage {
@@ -231,6 +258,7 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     zoomPunch: (amount) => {
       zoom = Math.max(zoom, amount);
     },
+    shakeIntensity: () => Math.hypot(shakeAmount * 0.85, shakeAmount * 0.7, zoom),
     worldToScreen: (position) => {
       const projected = position.clone().project(camera);
       return {

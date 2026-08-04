@@ -154,6 +154,15 @@ interface ContactRecord {
   settledMs: number | null;
   /** Largest camera deviation from its resting position during the window. */
   cameraPeak: number;
+  /**
+   * The combo streak this blow belonged to when it landed (G14). 1 means
+   * "opening blow, no combo in progress"; `hit`/`counter`/`super` events that
+   * extend `streakSide`/`streakCount` record the post-extension value here, so
+   * a test can correlate a landed blow's on-screen impact with how deep into
+   * a combo it was — see `comboScale` below, which is what actually reads
+   * this number back to escalate the presentation.
+   */
+  streak: number;
 }
 
 interface DebugBridge {
@@ -285,6 +294,31 @@ const openContacts: { record: ContactRecord; deadline: number }[] = [];
 const UPRIGHT_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['idle', 'windup', 'guard', 'attack']);
 /** How long after an impact the bridge keeps measuring it, in milliseconds. */
 const CONTACT_WINDOW_MS = 1600;
+/**
+ * How long after an impact `cameraPeak` keeps tracking it, in milliseconds
+ * (G14). Deliberately much shorter than `CONTACT_WINDOW_MS`: shake and zoom
+ * decay with a ~100ms half-life (`SHAKE_HALF_LIFE_S`/`ZOOM_HALF_LIFE_S` in
+ * `scene.ts`), so by 500ms a blow's own contribution is gone. Under `?fast=1`
+ * blows land every ~150-450ms — well inside the full 1600ms contact window —
+ * so tracking `cameraPeak` for that whole window meant an early, small hit's
+ * record stayed open long enough to pick up a LATER, unrelated hit's much
+ * bigger shake and report it as its own: two hits three streak-levels apart
+ * would show the same "peak" simply because they were both open when a third,
+ * bigger blow landed nearby. That made per-blow escalation unmeasurable, which
+ * is what `e2e/fight-feel.test.ts`'s "impact escalates with a running combo"
+ * spec caught. Scoping the window this way is what makes `cameraPeak` mean
+ * "how big did THIS impact's own shake get" again, matching its own doc
+ * comment on `ContactRecord`.
+ *
+ * 220ms is not about catching a peak mid-oscillation — `stage.shakeIntensity()`
+ * (see `Stage`) reads the shake/zoom envelope directly, set synchronously the
+ * instant `shake()`/`zoomPunch()` are called, so a single rendered frame after
+ * the event already reads close to the true value. It just needs to be wide
+ * enough to guarantee at least one frame renders inside it even under load,
+ * while staying well under the ~150ms fastest gap between blows so a later
+ * hit's bigger request can't bleed backward into an earlier one's window.
+ */
+const CAMERA_PEAK_WINDOW_MS = 220;
 
 function snapshot(side: Speaker): RigSnapshot {
   const rig = rigs![side];
@@ -326,11 +360,11 @@ stage.onFrame((dt, elapsed, real) => {
     // Fill in every impact still inside its measurement window.
     const now = performance.now();
     const gap = Math.abs(live.p1.position[0] - live.p2.position[0]);
-    const cameraOffset = Math.hypot(
-      camera.x - stage.cameraRest.x,
-      camera.y - stage.cameraRest.y,
-      camera.z - stage.cameraRest.z
-    );
+    // `stage.shakeIntensity()` reads the shake/zoom envelope directly rather
+    // than sampling the jittered, oscillating `camera.position` — see G14 on
+    // `Stage.shakeIntensity` for why the raw position was frame-rate-luck
+    // sensitive under real contention.
+    const shakeIntensity = stage.shakeIntensity();
     for (let i = openContacts.length - 1; i >= 0; i -= 1) {
       const open = openContacts[i]!;
       const record = open.record;
@@ -340,7 +374,9 @@ stage.onFrame((dt, elapsed, real) => {
 
       record.minGap = Math.min(record.minGap, gap);
       record.minHandChest = Math.min(record.minHandChest, distance(attacker.hand, target.chest));
-      record.cameraPeak = Math.max(record.cameraPeak, cameraOffset);
+      if (since <= CAMERA_PEAK_WINDOW_MS) {
+        record.cameraPeak = Math.max(record.cameraPeak, shakeIntensity);
+      }
 
       const shoved = Math.abs(target.knockback);
       record.peakKnockback = Math.max(record.peakKnockback, shoved);
@@ -375,7 +411,8 @@ function beginContact(
   by: Speaker,
   target: Speaker,
   damage: number,
-  crit: boolean
+  crit: boolean,
+  streak: number
 ): Vector3 {
   const attacker = rigs![by];
   const defender = rigs![target];
@@ -400,7 +437,8 @@ function beginContact(
     knockAt150: null,
     peakKnockback: 0,
     settledMs: null,
-    cameraPeak: 0
+    cameraPeak: 0,
+    streak
   };
   window.__pf.contacts.push(record);
   openContacts.push({ record, deadline: record.t + CONTACT_WINDOW_MS });
@@ -665,21 +703,55 @@ const LUNGE_STRENGTH = 1;
 let streakSide: Speaker | null = null;
 let streakCount = 0;
 
-/** Registers one damaging blow landed by `side`, and pops the HUD if it's 2+. */
-function extendStreak(side: Speaker, damage: number): void {
-  if (damage <= 0) return;
+/**
+ * Registers one damaging blow landed by `side`, pops the HUD if it's 2+, and
+ * returns the resulting streak count (1 if `damage <= 0` left it unchanged) —
+ * every call site uses this return value to scale that same blow's impact
+ * presentation via `comboScale` (G14), so the number driving the HUD counter
+ * and the number driving the shake/hitstop/flash/particles are the same read,
+ * not two counters that can drift apart.
+ */
+function extendStreak(side: Speaker, damage: number): number {
+  if (damage <= 0) return streakCount;
   streakCount = side === streakSide ? streakCount + 1 : 1;
   streakSide = side;
   if (streakCount >= 2) {
     hud.combo(side, streakCount);
     window.__pf.presentationCombos.push({ side, count: streakCount });
   }
+  return streakCount;
 }
 
 /** Round boundary or match end: a combo never carries into what comes next. */
 function resetStreak(): void {
   streakSide = null;
   streakCount = 0;
+}
+
+/**
+ * How far a landed blow's presentation escalates with `streak` (G14).
+ *
+ * Streak 1 (the opening blow, or no combo at all) always resolves to exactly
+ * 1 — the baseline single-hit feel every earlier loop tuned is untouched. From
+ * streak 2 on, the multiplier climbs linearly by `step` per streak level and
+ * is clamped at `COMBO_CAP_STREAK`: this is a 20-second demo clip, not an
+ * endurance test, so the top of the curve has to stay dramatic rather than
+ * become nauseating past a 5-hit run. Crit and streak are independent — this
+ * scale multiplies whatever the crit/non-crit base value already is, so a
+ * crit that lands at the end of a streak stacks both instead of one replacing
+ * the other.
+ *
+ * Two different `step` values are used at the call sites: a strong one for
+ * shake/zoom/flash/particle-count, and a much gentler one for hit-stop, which
+ * is the single easiest tool here to overdo — escalating it as hard as the
+ * others would turn a 5-streak into a slideshow instead of a beating.
+ */
+const COMBO_CAP_STREAK = 5;
+const COMBO_STEP = 0.5; // shake / zoom-punch / flash / particle count, per streak level
+const COMBO_HITSTOP_STEP = 0.08; // hit-stop, per streak level — deliberately much flatter
+function comboScale(streak: number, step: number): number {
+  const clamped = Math.min(Math.max(streak, 1), COMBO_CAP_STREAK);
+  return 1 + (clamped - 1) * step;
 }
 
 /** The real attacker of the in-flight turn, from its `attack` event — used to
@@ -717,7 +789,18 @@ function handleEvent(event: CombatEvent): void {
     case 'hit': {
       const attacker: Speaker = event.target === 'p1' ? 'p2' : 'p1';
       const rig = rigs[event.target];
-      const point = beginContact('hit', attacker, event.target, event.damage, event.crit);
+
+      // A hit against the attacker itself (self-damage, e.g. an overreach
+      // ability) doesn't extend anyone's streak — only blows that actually
+      // landed on the opponent do, and only those get the escalation below.
+      let streak = 1;
+      if (event.target !== turnAttacker && turnAttacker !== null) {
+        streak = extendStreak(turnAttacker, event.damage);
+      }
+      const scale = comboScale(streak, COMBO_STEP);
+      const hitstopScale = comboScale(streak, COMBO_HITSTOP_STEP);
+
+      const point = beginContact('hit', attacker, event.target, event.damage, event.crit, streak);
 
       rig.setPose(event.damage > 0 ? 'hurt' : 'idle');
       rig.flash(1);
@@ -725,32 +808,29 @@ function handleEvent(event: CombatEvent): void {
         (KNOCKBACK_BASE + event.damage * KNOCKBACK_PER_DAMAGE) * (event.crit ? KNOCKBACK_CRIT : 1)
       );
 
-      stage.shake(event.crit ? 0.85 : 0.5);
-      stage.hitstop(event.crit ? 160 : 90);
-      stage.zoomPunch(event.crit ? 0.7 : 0.3);
+      stage.shake((event.crit ? 0.85 : 0.5) * scale);
+      stage.hitstop(Math.round((event.crit ? 160 : 90) * hitstopScale));
+      stage.zoomPunch((event.crit ? 0.7 : 0.3) * scale);
 
       const color = event.crit ? 0xff5470 : 0xffd166;
-      fx.impactFlash(point, event.crit ? 0xffffff : color, event.crit ? 1.1 : 0.7);
-      fx.burst(point, color, event.crit ? 170 : 80, event.crit ? 9 : 6.5, {
-        size: event.crit ? 0.38 : 0.28
+      fx.impactFlash(point, event.crit ? 0xffffff : color, (event.crit ? 1.1 : 0.7) * scale);
+      fx.burst(point, color, Math.round((event.crit ? 170 : 80) * scale), event.crit ? 9 : 6.5, {
+        size: (event.crit ? 0.38 : 0.28) * Math.sqrt(scale)
       });
       fx.damageNumber(rig.headPosition(), event.damage, event.crit);
       event.crit ? sfx.crit() : sfx.hit();
       syncBars();
 
-      // A hit against the attacker itself (self-damage, e.g. an overreach
-      // ability) doesn't extend anyone's streak — only blows that actually
-      // landed on the opponent do.
-      if (event.target !== turnAttacker && turnAttacker !== null) {
-        extendStreak(turnAttacker, event.damage);
-      }
       break;
     }
 
     case 'blocked': {
       const attacker: Speaker = event.target === 'p1' ? 'p2' : 'p1';
       const rig = rigs[event.target];
-      const point = beginContact('hit', attacker, event.target, event.damage, false);
+      // A block neither extends nor breaks a streak (see the comment above
+      // `streakSide`), so it never escalates — it's just recorded against
+      // whatever streak was already in progress.
+      const point = beginContact('hit', attacker, event.target, event.damage, false, streakCount);
       rig.setPose('guard');
       // A guarded blow still shoves — less than a clean hit, which is what
       // makes blocking read as absorbing something rather than ignoring it.
@@ -771,24 +851,27 @@ function handleEvent(event: CombatEvent): void {
       rigs[event.by].setPose('attack');
       rigs[event.by].lunge(LUNGE_STRENGTH);
       const victim = rigs[target];
-      const point = beginContact('counter', event.by, target, event.damage, true);
-      victim.setPose('hurt');
-      victim.flash(1.4);
-      victim.knockback(0.9 + event.damage * KNOCKBACK_PER_DAMAGE);
-      stage.shake(0.95);
-      stage.hitstop(190);
-      stage.zoomPunch(0.85);
-      fx.impactFlash(point, 0xffffff, 1.25);
-      fx.burst(point, 0xffffff, 150, 8.5, { size: 0.36 });
-      fx.damageNumber(victim.headPosition(), event.damage, true);
-      sfx.crit();
-      syncBars();
       // A counter is the defender striking back — it both lands a damaging
       // blow for `event.by` and, per the reset rule above, is exactly the
       // kind of blow that ends the opponent's streak. `extendStreak` handles
       // both: it starts a fresh streak at 1 for `event.by` whenever they
-      // aren't already its owner.
-      extendStreak(event.by, event.damage);
+      // aren't already its owner, and this counter's own escalation rides on
+      // whatever that call returns.
+      const streak = extendStreak(event.by, event.damage);
+      const scale = comboScale(streak, COMBO_STEP);
+      const hitstopScale = comboScale(streak, COMBO_HITSTOP_STEP);
+      const point = beginContact('counter', event.by, target, event.damage, true, streak);
+      victim.setPose('hurt');
+      victim.flash(1.4);
+      victim.knockback(0.9 + event.damage * KNOCKBACK_PER_DAMAGE);
+      stage.shake(0.95 * scale);
+      stage.hitstop(Math.round(190 * hitstopScale));
+      stage.zoomPunch(0.85 * scale);
+      fx.impactFlash(point, 0xffffff, 1.25 * scale);
+      fx.burst(point, 0xffffff, Math.round(150 * scale), 8.5, { size: 0.36 * Math.sqrt(scale) });
+      fx.damageNumber(victim.headPosition(), event.damage, true);
+      sfx.crit();
+      syncBars();
       break;
     }
 
@@ -815,7 +898,13 @@ function handleEvent(event: CombatEvent): void {
       const victim = rigs[target];
       attacker.setPose('attack');
       attacker.lunge(1.25);
-      const point = beginContact('super', event.by, target, 0, true);
+      // A super is its own landed blow for streak purposes, on top of whatever
+      // `hit`/`blocked` event follows it for the actual credibility change —
+      // see the comment above `streakSide` for why. Its own escalation rides
+      // on the streak this call returns, same as every other landed blow.
+      const streak = extendStreak(event.by, event.damage);
+      const scale = comboScale(streak, COMBO_STEP);
+      const point = beginContact('super', event.by, target, 0, true, streak);
       victim.setPose('hurt');
       victim.flash(1.8);
       victim.knockback(1.4);
@@ -824,17 +913,13 @@ function handleEvent(event: CombatEvent): void {
       // super isn't one of the four catalogued moves.
       const spec = fx.special(event.name, point, attacker.handPosition());
       if (!spec) {
-        stage.shake(0.95);
-        fx.burst(point, 0xffffff, 180, 9, { size: 0.4 });
+        stage.shake(0.95 * scale);
+        fx.burst(point, 0xffffff, Math.round(180 * scale), 9, { size: 0.4 * Math.sqrt(scale) });
       }
-      fx.impactFlash(point, 0xffffff, 1.6);
-      stage.hitstop(300);
-      stage.zoomPunch(1.1);
+      fx.impactFlash(point, 0xffffff, 1.6 * scale);
+      stage.hitstop(Math.round(300 * comboScale(streak, COMBO_HITSTOP_STEP)));
+      stage.zoomPunch(1.1 * scale);
       sfx.crit();
-      // A super is its own landed blow for streak purposes, on top of whatever
-      // `hit`/`blocked` event follows it for the actual credibility change —
-      // see the comment above `streakSide` for why.
-      extendStreak(event.by, event.damage);
       break;
     }
 

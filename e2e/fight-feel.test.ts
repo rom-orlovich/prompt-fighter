@@ -43,6 +43,7 @@ interface Contact {
   peakKnockback: number;
   settledMs: number | null;
   cameraPeak: number;
+  streak: number;
 }
 
 /** `cardIndex` picks which bundled transcript to run — see `STAGES` in `main.ts`. */
@@ -421,4 +422,151 @@ test.describe('fight feel', () => {
       expect(errors).toEqual([]);
     });
   }
+
+  // --- G14: a running combo must be felt, not just counted -----------------
+  //
+  // `streakCount` (see `extendStreak` in `main.ts`) already drove the HUD
+  // combo counter before this loop — nothing in the impact path read it back,
+  // so a 4th consecutive blow shook the camera, hit-stopped and flashed
+  // exactly like the 1st. `comboScale` now scales shake/hitstop/zoom/flash/
+  // particles by the streak a landed blow belongs to (`ContactRecord.streak`,
+  // read straight off the same counter the HUD uses), clamped at streak 5 so
+  // a long combo stays dramatic instead of turning a 20s clip into a
+  // slideshow. Runs the microservices stage (cardIndex 0) — the bundled
+  // transcript the G11 comment above notes reaches a 5-streak, unlike
+  // tabs-vs-spaces' 3.
+  test('impact escalates with a running combo, measured and looked at', async ({ page }) => {
+    test.setTimeout(180000);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+
+    // Needs real rendering — the screenshots below have to mean something.
+    // Same self-skip as the victory-celebration spec: under a software
+    // rasteriser the render loop can't sustain a full match in any sane
+    // timeout, so this proves nothing slowly instead of failing loudly.
+    await page.goto('/');
+    const renderer = await page.evaluate(() => {
+      const probe = document.createElement('canvas');
+      const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+      if (!gl) return 'none';
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : 'unknown';
+    });
+    test.skip(
+      /swiftshader|llvmpipe|software|none/i.test(renderer),
+      `software rasteriser (${renderer}) cannot sustain the render loop — run with --headed on a real GPU`
+    );
+
+    await startMatch(page, '/?fast=1&hold=1&draw=1', 0);
+
+    // LOOKED AT: grab a streak-1 blow and a streak-4-or-higher blow the
+    // moment each lands, while the shake/flash/burst are still on screen —
+    // waiting until after `matchEnded` would only ever catch the stage at
+    // rest.
+    mkdirSync(SHOTS, { recursive: true });
+    let seen = 0;
+    let shotLow: string | null = null;
+    let shotHigh: string | null = null;
+    const shotDeadline = Date.now() + 120000;
+    while ((!shotLow || !shotHigh) && Date.now() < shotDeadline) {
+      const contacts: Contact[] = await page.evaluate(() => (window as any).__pf.contacts);
+      if (contacts.length > seen) {
+        const fresh = contacts.slice(seen);
+        seen = contacts.length;
+        for (const c of fresh) {
+          if (!shotLow && c.streak === 1) {
+            await page.waitForTimeout(60); // let this frame's shake/flash paint
+            shotLow = join(SHOTS, 'combo-streak-1.png');
+            await page.screenshot({ path: shotLow });
+          }
+          if (!shotHigh && c.streak >= 4) {
+            await page.waitForTimeout(60);
+            shotHigh = join(SHOTS, 'combo-streak-4plus.png');
+            await page.screenshot({ path: shotHigh });
+          }
+        }
+      }
+      if (await page.evaluate(() => (window as any).__pf.matchEnded)) break;
+      await page.waitForTimeout(40);
+    }
+    expect(shotLow, 'captured a streak-1 blow screenshot').not.toBeNull();
+    expect(shotHigh, 'captured a streak-4-or-higher blow screenshot').not.toBeNull();
+
+    await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
+      timeout: 120000
+    });
+    // Let the final impact's measurement window close before reading it back.
+    await page.waitForTimeout(1800);
+
+    // MEASURED: per-streak average camera peak, straight from the same
+    // `window.__pf.contacts` records G6 already reads `cameraPeak` off of.
+    //
+    // A `super`'s camera shake mostly comes from its own named-special FX
+    // (`fx.special`'s `spec.shake`, independent of `comboScale` — see the
+    // 'super' case in `main.ts`), so it's excluded here: it would otherwise
+    // inject a second, unrelated source of variance into a comparison that's
+    // supposed to isolate the streak's effect. `hit`/`counter` blows are the
+    // ones `comboScale` fully controls.
+    //
+    // Crit and non-crit blows have very different baselines (0.85 vs 0.5
+    // base shake) — pooling both crit-ness classes into one streak-1 average
+    // makes that composition, not the streak, the thing driving the number.
+    // Comparing each streak>=3 blow against the streak-1 average of blows
+    // with the SAME crit-ness isolates what `comboScale` alone contributed.
+    const contacts: Contact[] = await page.evaluate(() => (window as any).__pf.contacts);
+    const scored = contacts.filter((c) => c.kind !== 'super');
+    const avg = (values: number[]): number => values.reduce((a, b) => a + b, 0) / values.length;
+
+    const byStreak = new Map<number, number[]>();
+    for (const c of scored) {
+      const bucket = byStreak.get(c.streak) ?? [];
+      bucket.push(c.cameraPeak);
+      byStreak.set(c.streak, bucket);
+    }
+    const summary = [...byStreak.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([streak, values]) => ({ streak, n: values.length, avgCameraPeak: Number(avg(values).toFixed(3)) }));
+    console.log('cameraPeak by streak (microservices, undriven, hit/counter only):', JSON.stringify(summary));
+
+    const streak1ByCrit = {
+      false: scored.filter((c) => c.streak === 1 && !c.crit).map((c) => c.cameraPeak),
+      true: scored.filter((c) => c.streak === 1 && c.crit).map((c) => c.cameraPeak)
+    };
+    const highStreak = scored.filter((c) => c.streak >= 3);
+    console.log(
+      'streak-1 baselines — non-crit:',
+      streak1ByCrit.false.map((n) => n.toFixed(3)),
+      'crit:',
+      streak1ByCrit.true.map((n) => n.toFixed(3))
+    );
+    expect(streak1ByCrit.false.length, 'non-crit streak-1 blows observed').toBeGreaterThan(0);
+    expect(highStreak.length, 'streak>=3 hit/counter blows observed in this match').toBeGreaterThan(0);
+
+    const ratios = highStreak.map((c) => {
+      const baseline = avg(c.crit ? streak1ByCrit.true : streak1ByCrit.false);
+      return { streak: c.streak, crit: c.crit, cameraPeak: c.cameraPeak, baseline, ratio: c.cameraPeak / baseline };
+    });
+    console.log('streak>=3 vs same-crit streak-1 baseline:', JSON.stringify(ratios.map((r) => ({
+      streak: r.streak,
+      crit: r.crit,
+      cameraPeak: Number(r.cameraPeak.toFixed(3)),
+      baseline: Number(r.baseline.toFixed(3)),
+      ratio: Number(r.ratio.toFixed(3))
+    }))));
+
+    // NO REGRESSION: `comboScale(1, step) === 1` exactly, so a streak-1
+    // blow's shake/hitstop/zoom/flash/particles compute identically to
+    // before this loop — G6 above (`cameraPeak > 0.15` for every contact)
+    // already pins that floor for every blow including these.
+    const avgRatio = avg(ratios.map((r) => r.ratio));
+    expect(
+      avgRatio,
+      `streak>=3 blows should average at least 40% more camera peak than a same-crit-ness ` +
+        `streak-1 blow in the same match (got average ratio ${avgRatio.toFixed(3)}: ${JSON.stringify(
+          ratios.map((r) => `streak${r.streak}${r.crit ? '(crit)' : ''}=${r.ratio.toFixed(2)}x`)
+        )})`
+    ).toBeGreaterThanOrEqual(1.4);
+
+    expect(errors).toEqual([]);
+  });
 });
