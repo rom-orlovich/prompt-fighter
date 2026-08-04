@@ -16,6 +16,7 @@ export default defineConfig({
   },
   use: {
     baseURL: BASE_URL,
-    browserName: 'chromium'
+    browserName: 'chromium',
+    video: 'on'
   }
 });
