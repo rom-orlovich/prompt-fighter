@@ -423,8 +423,65 @@ const HEAD_MARKER_OFFSET = 0.5;
 /** Base emissive glow applied to every tinted material before charge/flash heat it up. */
 const BASE_EMISSIVE_INTENSITY = 0.3;
 
+/**
+ * Base emissive glow for the body's SKIN material specifically (G23) — far
+ * lower than `BASE_EMISSIVE_INTENSITY`. Restoring the base-colour texture
+ * (see `tint()` below) means the body now has a real skin/costume texture to
+ * show; a constant 0.3-intensity brand-coloured emissive wash on top of it
+ * would still read as a glowing painted surface, the exact "plastic" read
+ * this loop exists to fix. Charge/flash still add on top of this at their
+ * existing magnitudes (see `update()`), so the hit-feedback glow is if
+ * anything MORE legible now — it ramps up from a near-dark baseline instead
+ * of an already-lit one. Eyebrows/eyes and hair keep the old, higher
+ * baseline (`BASE_EMISSIVE_INTENSITY`) — they never got a base-colour map
+ * restored (see the `allowedUris` in `packBodyGlb`), so this loop doesn't
+ * touch how they read.
+ */
+const SKIN_BASE_EMISSIVE_INTENSITY = 0.04;
+
 /** Hair reads as hair, not as brand paint — it stays dark on every fighter. */
 const HAIR_COLOR = 0x23232b;
+
+// --- G23: skin realism -----------------------------------------------------
+//
+// G15 restored the body's normal/roughness maps but kept the base-colour
+// (skin/costume) texture stripped, so `tint()` painted the whole body a flat
+// brand hue over that real surface detail — real relief, unreal colour. G21
+// then added identity carriers that don't depend on that whole-body paint: a
+// silhouette rim glow, a ground glow, and the HUD/select-card brand colour
+// (nameplate, health bar, card border — see `hud.ts`/`style.css`), all keyed
+// to `ROSTER[name].color`. That made the G15 trade affordable to reopen:
+// `scripts/vendor-characters.mjs`'s `packBodyGlb` now also keeps the body's
+// base-colour map (downscaled to fit the vendored-asset budget), and `tint()`
+// below leaves that texture's own colour alone instead of overpainting it —
+// see `hasMap` there.
+//
+// The one thing whole-body brand paint used to guarantee "for free" was
+// telling three same-body fighters (CLAUDE/CODEX/GEMINI all wear the `Male`
+// body — see `roster/characters.ts`) apart at a glance even before you read
+// a nameplate. Hair, height/bulk and the rim/ground glow now carry most of
+// that, but the vendored base-colour texture also happens to bake in a
+// distinct near-neutral (low-saturation, dark) region for the costume's
+// trunks/briefs — sampled directly from the shipped texture, not guessed
+// (see `SKIN_ACCENT_LUM_THRESHOLD`'s doc comment) — which `attachRimShader`
+// recolours to the fighter's own brand hue. That reads as a real costume
+// accent (trunks in the fighter's colour), not a paint job, and gives even
+// two same-body fighters one more instantly-legible brand-coloured shape.
+
+/**
+ * Luminance/saturation gate (both 0-1) for the base-colour texture swap
+ * above — a texel below BOTH thresholds is treated as the costume's
+ * trunks/briefs region rather than skin. Picked by sampling the actual
+ * vendored texture's reduced colour palette (`convert -colors 16
+ * -unique-colors`): every skin texel sampled was clearly warm and saturated
+ * (R visibly > B, e.g. `#6A4A39`, `#8E553C` — saturation 0.19+), while the
+ * trunks region sat in a tight, near-neutral cluster (`#343434`, `#403E3E`,
+ * `#434342` — luminance ~0.20-0.27, saturation <0.02). Both conditions are
+ * required together so a dark-but-saturated skin shadow is never mistaken
+ * for the trunks and swapped to brand colour.
+ */
+const SKIN_ACCENT_LUM_THRESHOLD = 0.3;
+const SKIN_ACCENT_SATURATION_THRESHOLD = 0.06;
 
 // --- G21: aggressive posture and reactive "coiled power" ------------------
 //
@@ -493,9 +550,26 @@ const GROUND_GLOW_OPACITY_AGGRO = 0.42;
  * without recompiling the shader — mutating the uniform object already bound
  * into the compiled program, the standard three.js pattern for an animated
  * `onBeforeCompile` uniform.
+ *
+ * `skinAccentColor` (G23), when passed, additionally recolours the
+ * base-colour texture's trunks/briefs region (see `SKIN_ACCENT_LUM_THRESHOLD`)
+ * to the fighter's brand hue, injected right after `#include <map_fragment>`
+ * — the chunk that multiplies the sampled texture into `diffuseColor` — so
+ * the swap sees the real sampled texel, not the material's flat `color`.
+ * Only the caller that just restored a real base-colour map (the body mesh,
+ * see `tint()`) passes this; every other rim-shaded material (hair, eyebrows,
+ * eyes) is unaffected.
  */
-function attachRimShader(material: THREE.MeshStandardMaterial, color: number): void {
-  const uniforms = { uRimIntensity: { value: 0 }, uRimColor: { value: new THREE.Color(color) } };
+function attachRimShader(
+  material: THREE.MeshStandardMaterial,
+  color: number,
+  skinAccentColor?: number
+): void {
+  const uniforms: Record<string, THREE.IUniform> = {
+    uRimIntensity: { value: 0 },
+    uRimColor: { value: new THREE.Color(color) }
+  };
+  if (skinAccentColor !== undefined) uniforms.uSkinAccentColor = { value: new THREE.Color(skinAccentColor) };
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = shader.vertexShader
@@ -508,17 +582,28 @@ function attachRimShader(material: THREE.MeshStandardMaterial, color: number): v
         '#include <project_vertex>',
         '#include <project_vertex>\n\tvRimViewDir = normalize( -mvPosition.xyz );'
       );
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        '#include <common>',
-        '#include <common>\nuniform float uRimIntensity;\nuniform vec3 uRimColor;\nvarying vec3 vRimNormal;\nvarying vec3 vRimViewDir;'
-      )
-      .replace(
-        '#include <dithering_fragment>',
-        `float rimFresnel = pow( 1.0 - max( dot( normalize( vRimNormal ), normalize( vRimViewDir ) ), 0.0 ), ${RIM_FRESNEL_POWER.toFixed(
-          1
-        )} );\n\tgl_FragColor.rgb += uRimColor * rimFresnel * uRimIntensity;\n\t#include <dithering_fragment>`
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      `#include <common>\nuniform float uRimIntensity;\nuniform vec3 uRimColor;\n${
+        skinAccentColor !== undefined ? 'uniform vec3 uSkinAccentColor;\n' : ''
+      }varying vec3 vRimNormal;\nvarying vec3 vRimViewDir;`
+    );
+    if (skinAccentColor !== undefined) {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>\n\t{\n\t\tfloat accentLum = dot( diffuseColor.rgb, vec3( 0.299, 0.587, 0.114 ) );\n\t\tfloat accentMax = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );\n\t\tfloat accentMin = min( diffuseColor.r, min( diffuseColor.g, diffuseColor.b ) );\n\t\tif ( accentLum < ${SKIN_ACCENT_LUM_THRESHOLD.toFixed(
+          2
+        )} && ( accentMax - accentMin ) < ${SKIN_ACCENT_SATURATION_THRESHOLD.toFixed(
+          2
+        )} ) {\n\t\t\tdiffuseColor.rgb = uSkinAccentColor;\n\t\t}\n\t}`
       );
+    }
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <dithering_fragment>',
+      `float rimFresnel = pow( 1.0 - max( dot( normalize( vRimNormal ), normalize( vRimViewDir ) ), 0.0 ), ${RIM_FRESNEL_POWER.toFixed(
+        1
+      )} );\n\tgl_FragColor.rgb += uRimColor * rimFresnel * uRimIntensity;\n\t#include <dithering_fragment>`
+    );
   };
   material.userData.rim = uniforms;
   material.needsUpdate = true;
@@ -902,28 +987,57 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     }
   }
 
-  /** Tints one loaded mesh into this fighter's brand hue and registers its materials. */
+  /**
+   * Tints one loaded mesh into this fighter's brand hue and registers its
+   * materials — UNLESS the mesh already carries a real base-colour texture
+   * (G23; the body's skin/costume map, restored by `packBodyGlb`), in which
+   * case that texture's own colour is left alone instead of overpainted, and
+   * brand identity moves to a lower-intensity emissive plus the rim glow's
+   * trunks-region recolour (see `attachRimShader`'s `skinAccentColor`). Hair,
+   * eyebrows and eyes never got a base-colour map restored, so they still
+   * clone `map === null` and keep the exact pre-G23 flat-tint behaviour.
+   */
   function tint(mesh: THREE.Mesh, color: number, emissive: boolean): void {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     const cloned = materials.map((material) => {
       const clone = (material as THREE.MeshStandardMaterial).clone();
-      clone.color.setHex(color);
-      // The vendor step (G15) never embeds a base-colour map for the body — only
-      // its normal and roughness maps survive, so `map` is already null and the
-      // brand tint above stays a flat, readable colour. Do NOT null `normalMap`/
-      // `roughnessMap`/`metalnessMap` here: those are what give the tinted body
-      // real surface form (muscle definition, non-uniform specular) instead of
-      // reading as painted plastic.
+      const hasSkinTexture = !!clone.map;
+      // Do NOT null `normalMap`/`roughnessMap`/`metalnessMap` here regardless
+      // of `hasSkinTexture`: those are what give the body real surface form
+      // (muscle definition, non-uniform specular) instead of reading as
+      // painted plastic, restored or not.
+      if (!hasSkinTexture) {
+        // No base-colour map survived vendoring for this material (hair,
+        // eyebrows, eyes) — flat brand tint, exactly as before G23.
+        clone.color.setHex(color);
+      }
+      // else: leave `clone.color` at its loaded default (white) so the
+      // restored base-colour texture reads as its own skin/costume colour,
+      // not multiplied by a brand hue.
       if ('emissive' in clone && emissive) {
         (clone as THREE.MeshStandardMaterial).emissive.setHex(color);
-        (clone as THREE.MeshStandardMaterial).emissiveIntensity = BASE_EMISSIVE_INTENSITY;
+        const baseEmissive = hasSkinTexture ? SKIN_BASE_EMISSIVE_INTENSITY : BASE_EMISSIVE_INTENSITY;
+        (clone as THREE.MeshStandardMaterial).emissiveIntensity = baseEmissive;
+        // `update()` reads this back every frame to add charge/flash on top
+        // of the right baseline for THIS material — skin runs a much lower
+        // resting glow than the untextured accent materials (see
+        // `SKIN_BASE_EMISSIVE_INTENSITY`'s doc comment).
+        clone.userData.baseEmissive = baseEmissive;
         tintedMaterials.push(clone as THREE.MeshStandardMaterial);
         // G21: the silhouette-edge rim glow rides on the same brand-tinted
         // materials the base emissive already uses — hair stays untouched
-        // (dark, not brand-lit), consistent with `HAIR_COLOR` above.
-        attachRimShader(clone as THREE.MeshStandardMaterial, profile.accent);
+        // (dark, not brand-lit), consistent with `HAIR_COLOR` above. G23:
+        // the skin-textured material also gets the trunks-region recolour
+        // (`character.skin`, the fighter's full brand hue — a stronger
+        // identity read than `profile.accent`'s pale glow tint, since this
+        // is meant to read as a solid costume colour, not a highlight).
+        attachRimShader(
+          clone as THREE.MeshStandardMaterial,
+          profile.accent,
+          hasSkinTexture ? color : undefined
+        );
         rimMaterials.push(clone as THREE.MeshStandardMaterial);
       }
       return clone;
@@ -1331,7 +1445,13 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       // hit flash last four times longer on a slow machine than a fast one.
       flashAmount *= Math.pow(0.5, realDt / 0.07);
       for (const material of tintedMaterials) {
-        material.emissiveIntensity = BASE_EMISSIVE_INTENSITY + charge * 0.85 + flashAmount;
+        // G23: each material's own resting baseline (see `tint()`) — the
+        // skin-textured body material rests much lower than the untextured
+        // accent materials (hair/eyebrows/eyes), which keep the original
+        // constant. Charge/flash add on top of whichever baseline this
+        // material actually has.
+        const baseEmissive = (material.userData.baseEmissive as number | undefined) ?? BASE_EMISSIVE_INTENSITY;
+        material.emissiveIntensity = baseEmissive + charge * 0.85 + flashAmount;
       }
     }
   };

@@ -127,6 +127,21 @@ const MAX_COMBINED_BYTES = 6 * 1024 * 1024;
  */
 const BODY_TEXTURE_RESOLUTION = 512;
 
+/**
+ * Downscale target for the restored base-colour (skin/costume) map alone
+ * (G23) — narrower than `BODY_TEXTURE_RESOLUTION` on purpose. At 512px the
+ * two base-colour maps alone cost ~366KB combined (measured: PNG compresses
+ * a photographic skin texture far worse than the smoother normal/roughness
+ * maps at the same resolution), which pushed the combined payload to
+ * 6.25MB against the 6MB budget that was already nearly full; 320px still
+ * landed at 6.05MB. 256px keeps visible costume/skin detail — this is a
+ * UV-mapped diffuse read at arena/select-card distance, not a close-up
+ * texel inspection — while costing ~118KB combined, fitting the restored
+ * maps in the ~370KB of headroom the pre-G23 5.88MB payload left under
+ * budget with margin to spare.
+ */
+const BODY_BASE_COLOR_RESOLUTION = 256;
+
 function arg(name) {
   const i = process.argv.indexOf(name);
   return i === -1 ? null : process.argv[i + 1];
@@ -144,13 +159,13 @@ function packPair(dir, name, outName) {
 }
 
 /** Downscales a source PNG with ImageMagick and returns its bytes. */
-function downscalePng(srcPath) {
+function downscalePng(srcPath, resolution = BODY_TEXTURE_RESOLUTION) {
   const outPath = join(tmpdir(), `vendor-tex-${process.pid}-${Math.random().toString(36).slice(2)}.png`);
   execFileSync('convert', [
     srcPath,
     '-strip',
     '-resize',
-    `${BODY_TEXTURE_RESOLUTION}x${BODY_TEXTURE_RESOLUTION}`,
+    `${resolution}x${resolution}`,
     '-define',
     'png:compression-level=9',
     '-define',
@@ -165,26 +180,43 @@ function downscalePng(srcPath) {
 }
 
 /**
- * Packs a body `.gltf` + `.bin` pair, restoring ONLY its normal and
- * metallic-roughness maps (downscaled) so the fighter reads as a real body
- * under lighting while `fighter.ts`'s brand-colour tint stays a flat colour
- * (base-colour texture stays stripped on purpose — see G15 done-marker).
- * The same source gltf also carries stub hair/eye materials; their maps are
- * deliberately left stripped, so only the two body-named textures are kept.
+ * The body's base-colour (skin/costume) source file, per body — G23. Not a
+ * uniform `T_Superhero_${body}_Dark.png` template: the Male pack's file is
+ * named `_Dark.png` but the Female pack's is `_Dark_BaseColor.png` (verified
+ * against the extracted pack, not assumed), so this is an explicit map
+ * rather than a derived name.
+ */
+const BODY_BASE_COLOR_URI = {
+  Male: 'T_Superhero_Male_Dark.png',
+  Female: 'T_Superhero_Female_Dark_BaseColor.png'
+};
+
+/**
+ * Packs a body `.gltf` + `.bin` pair, restoring its normal, metallic-roughness
+ * AND base-colour maps (all downscaled) so the fighter reads as a real body
+ * under lighting — a real skin/costume texture, not a flat brand-colour
+ * paint (G23; see the G23 done-marker for why the G15-era stripped-base-colour
+ * trade was reopened: G21 added identity carriers — the rim glow, ground glow
+ * and per-fighter accents in `fighter.ts` — that don't need whole-body paint
+ * to read, which is what made restoring the skin texture affordable). The
+ * same source gltf also carries stub hair/eye materials; their maps are
+ * deliberately left stripped, so only the three body-named textures are kept.
  */
 function packBodyGlb(dir, name, outName, body) {
   const gltf = JSON.parse(readFileSync(join(dir, `${name}.gltf`), 'utf8'));
   const bin = new Uint8Array(readFileSync(join(dir, `${name}.bin`)));
 
-  const allowedUris = new Set([`T_Superhero_${body}_Normal.png`, `T_Superhero_${body}_Roughness.png`]);
+  const baseColorUri = BODY_BASE_COLOR_URI[body];
+  const allowedUris = new Set([`T_Superhero_${body}_Normal.png`, `T_Superhero_${body}_Roughness.png`, baseColorUri]);
   const downscaledByUri = new Map();
 
   const glb = packGltfToGlb(gltf, bin, {
-    keepTextureSlots: new Set(['normalTexture', 'metallicRoughnessTexture']),
+    keepTextureSlots: new Set(['normalTexture', 'metallicRoughnessTexture', 'baseColorTexture']),
     resolveImageBytes: (image) => {
       if (!image.uri || !allowedUris.has(image.uri)) return undefined;
       if (!downscaledByUri.has(image.uri)) {
-        downscaledByUri.set(image.uri, downscalePng(join(dir, image.uri)));
+        const resolution = image.uri === baseColorUri ? BODY_BASE_COLOR_RESOLUTION : BODY_TEXTURE_RESOLUTION;
+        downscaledByUri.set(image.uri, downscalePng(join(dir, image.uri), resolution));
       }
       return downscaledByUri.get(image.uri);
     }

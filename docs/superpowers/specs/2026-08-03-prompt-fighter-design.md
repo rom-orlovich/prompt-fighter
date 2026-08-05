@@ -138,9 +138,10 @@ Dark void, neon grid floor with reflection, volumetric spotlights, Tekken-style 
 Each fighter is a **real CC0 low-poly humanoid model** with realistic (~7-head) proportions,
 loaded via `GLTFLoader` and animated at runtime with `AnimationMixer` against a genuine
 unarmed-combat clip set: guard-up stance, jab, cross, two hit reactions and a K.O. All four
-fighters share one rig; brand color is applied by material tinting on the base mesh — cloned
-per fighter and recolored to its brand hue with an emissive rim — rather than by swapping
-geometry, and per-fighter height and build keep the silhouettes apart.
+fighters share one rig. The body's own skin/costume texture is what the mesh reads as (G23 —
+see below); brand identity comes from a fresnel rim glow, a ground glow, a recoloured
+trunks/briefs accent baked into that same texture, and per-fighter hair/height/build, not from
+painting the whole body a flat brand hue.
 
 **Streaming text (revised, G13).** The original design floated a canvas-textured,
 camera-facing billboard above the humanoid rig's head, streaming the model's reply with a
@@ -208,6 +209,50 @@ A same-fighter close-up before/after confirms the rim/ground-glow treatment does
 the G15 surface detail. `window.__pf.rigs[side].aggression` exposes the live eased value; an
 undriven real match shows it swing from ~0 (round open) to ~0.9+ (a deep streak or full meter)
 and back down, not a constant (`e2e/fight-feel.test.ts`).
+
+**Skin realism (G23).** G15 restored the body's normal/roughness maps but kept the base-colour
+(skin/costume) texture stripped, so the fighters had real surface *relief* under real shading
+detail but were still painted a single flat brand hue underneath it — real muscle striations,
+unreal colour. That trade made sense before G21: with no other identity carrier, whole-body
+brand paint was the only thing telling four fighters apart, and three of them (CLAUDE, CODEX,
+GEMINI) share the same `Male` body. G21 changed the economics by adding identity that doesn't
+depend on whole-body paint — the rim glow, the ground glow, and the HUD/select-card brand colour
+(nameplate, health bar, card border, all keyed to `ROSTER[name].color`, independent of the 3D
+model). That made it affordable to reopen the G15 trade:
+
+- `scripts/vendor-characters.mjs`'s `packBodyGlb` now also keeps the body's base-colour map
+  (downscaled to 256px — narrower than the 512px normal/roughness maps, since a photographic
+  skin texture compresses far worse than the smoother normal/roughness maps at the same
+  resolution, and the restored maps had to fit the existing ~370KB of headroom under the 6MB
+  vendored-asset budget).
+- `fighter.ts`'s `tint()` no longer overwrites `material.color` for a mesh that actually has this
+  texture (`hasMap`) — the loaded base colour is left alone, so the body reads as its own real
+  skin/costume tone rather than a brand-tinted flat colour. Hair, eyebrows and eyes never got a
+  base-colour map restored, so they keep the exact pre-G23 flat-tint behaviour untouched.
+- The constant ambient emissive on the skin-textured material dropped from `0.3` to `0.04`
+  (`SKIN_BASE_EMISSIVE_INTENSITY`) — a resting brand-coloured glow that strong would still read
+  as a lit paint job on top of the now-visible texture. Charge/flash still add their existing
+  magnitudes on top, so hit feedback is if anything more legible: it now ramps up from a near-dark
+  baseline instead of an already-lit one.
+- The vendored base-colour texture happens to bake in a distinct, near-neutral dark region for
+  the costume's trunks/briefs (sampled directly from the shipped texture's reduced colour
+  palette, not guessed — see `SKIN_ACCENT_LUM_THRESHOLD`'s doc comment in `fighter.ts`).
+  `attachRimShader` gained an optional shader injection, right after `#include <map_fragment>`,
+  that recolours any texel below both a luminance and a saturation threshold to the fighter's
+  full brand hue. That reads as a real costume accent — trunks in the fighter's own colour — not
+  a paint job, and gives same-body fighters one more instantly-legible brand-coloured shape
+  beyond hair and build.
+
+Verified by rendering: a real-GPU before/after (git-stash technique, as G21 used) on the same
+fighter in the arena and on a select card shows visible muscle definition, skin-tone shading and
+non-uniform specular where the "before" frame was a flat, uniformly-lit single-hue silhouette —
+in the arena mid-fight, e.g., CODEX's back and shoulders show real form and a visible beard,
+where before it was a uniform neon-green mannequin. On the select grid, all four fighters remain
+instantly tellable apart: three share a body but differ by hairstyle, build and a clearly
+brand-coloured trunks accent (most visible on CODEX's mint-green and GEMINI's bright blue against
+their cooler key-light tint; present but subtler on CLAUDE, whose warm key light sits closer in
+hue to its own brand orange). 124 unit tests, tsc, build and the full e2e suite (18/18 headed,
+real GPU, `--workers=2`) all green.
 
 ## 6. Testing
 

@@ -259,13 +259,17 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
   held stance (arms crossed up, covering the head/chest) rather than a punch paused mid-swing
   — the frozen jab was serviceable but visibly the *same* pose as `windup`, just a few frames
   further into the same clip, so a blocked exchange and a loading punch read as identical.
-- Brand color is applied via **material tinting**, not geometry or texture swap: the stock
-  materials are cloned per fighter and recolored to the brand hue with an emissive rim, the
-  same way the procedural rig's `color`/`accent`/`trim` fields worked. One shared mesh
-  serves all four fighters — no per-brand texture asset to vendor or maintain. (G15 restored
-  the body's *surface* maps — normal and metallic-roughness — so the tint sits on real form
-  instead of flat plastic; see "Trim-for-size pipeline" below for what does and does not
-  survive vendoring.)
+- Brand color is applied via **material cloning**, not geometry or texture swap: the stock
+  materials are cloned per fighter and their accent details recolored to the brand hue, the
+  same way the procedural rig's `color`/`accent`/`trim` fields worked. One shared mesh serves
+  all four fighters — no per-brand texture asset to vendor or maintain. G15 restored the
+  body's *surface* maps (normal and metallic-roughness) so a whole-body tint sat on real form
+  instead of flat plastic; **G23 went further and restored the body's own base-colour (skin/
+  costume) map too**, so the body now reads as its own real texture rather than a flat brand
+  tint — identity moved to a fresnel rim glow, a ground glow, a brand-recoloured trunks/briefs
+  accent baked into that texture, and per-fighter hair/build. See "Body surface detail (G15)"
+  below for what does and does not survive vendoring, and its G23 update for the base-colour
+  restoration specifically.
 - **Facing.** The rig is authored facing `+Z` (verified by rendering it at 0, ±π/2 and π
   against a marker on the `+X` axis). `facingFor(side)` turns each fighter a quarter turn
   toward its opponent, then back toward the camera by `0.3` rad for the classic 3/4
@@ -316,22 +320,31 @@ covered by `tests/gltf-to-glb.test.ts`.
 - Keeps `normalTexture` and `pbrMetallicRoughness.metallicRoughnessTexture` (roughness lives
   in that texture's G channel; `metallicFactor: 0` on the source material means the same
   texture's B channel, read as metalness, is always zeroed — the map is safe to reuse as-is).
-- Explicitly does **not** keep `baseColorTexture` — restoring it would make all four fighters
-  the same skin-toned human and erase the brand-colour identity `tests/characters.test.ts`
-  asserts (`ROSTER[name].color`) and the select screen / health bars are keyed to. Stripping
-  it also resets `baseColorFactor` to `[1,1,1,1]`, so `fighter.ts`'s `tint()` multiplying in
-  the brand hue via `material.color` is the only colour information left — a flat, readable
-  brand tint sitting on real geometric/specular detail instead of painted plastic.
-  `tint()` no longer nulls out `map` at runtime for this reason: there is nothing left to
-  null (no base-colour map survives vendoring) and doing so used to read as though it also
-  discarded the normal/roughness maps it must NOT touch.
-- Downscales both source maps (raw normal+roughness for both bodies is ~14MB against a 6MB
-  combined budget) to 512×512 with ImageMagick (`-strip -define png:compression-level=9`)
-  before handing the bytes to `packGltfToGlb`, which embeds them as bufferView-backed images
-  appended after the mesh binary — still one self-contained `.glb` per body, no sidecar
-  image files. Measured: ~848KB combined for all four maps (both bodies' normal + roughness),
-  bringing the combined vendored payload from ~4.33MB to ~5.19MB — under the existing 6MB
-  ceiling in `tests/vendored-assets.test.ts` without raising it.
+- **G23 update — `baseColorTexture` is now also kept.** G15 shipped without it: restoring the
+  skin/costume texture would have made all four fighters read as the same skin-toned human and
+  erased the ONLY brand-colour identity that existed at the time (`fighter.ts`'s whole-body
+  `material.color` tint, keyed to `ROSTER[name].color`). That is no longer the only identity
+  carrier — G21 added a fresnel rim glow, a ground glow and per-fighter posture, and the HUD/
+  select-card brand colour (nameplate, health bar, card border) was always independent of the
+  3D model's own tint — so restoring the real texture became affordable. `tint()` in
+  `fighter.ts` now only overwrites `material.color` with the flat brand hue for materials that
+  did NOT get a base-colour map back (hair, eyebrows, eyes); the body's own material keeps its
+  loaded (white) colour so the texture shows unmultiplied. The vendored texture's own
+  near-neutral dark region (a trunks/briefs costume detail baked into the source art) is
+  additionally recoloured to the fighter's brand hue via a shader injection in
+  `attachRimShader`, so identity picks up a "costume accent" instead of a paint job. See the
+  G23 done-marker and `2026-08-03-prompt-fighter-design.md`'s "Skin realism (G23)" subsection
+  for the full before/after.
+- Downscales the normal/roughness maps (raw normal+roughness for both bodies is ~14MB against
+  a 6MB combined budget) to 512×512, and the base-colour map to a narrower 256×256 (a
+  photographic skin texture compresses far worse than the smoother normal/roughness maps at the
+  same resolution — 512px base-colour alone pushed the combined payload to 6.25MB), with
+  ImageMagick (`-strip -define png:compression-level=9`) before handing the bytes to
+  `packGltfToGlb`, which embeds them as bufferView-backed images appended after the mesh binary
+  — still one self-contained `.glb` per body, no sidecar image files. Measured: combined
+  vendored payload is now ~6.00MB decimal (~5.72MiB) against the `6 * 1024 * 1024`-byte
+  (6.29MB decimal) ceiling in `tests/vendored-assets.test.ts` — restored without raising the
+  budget.
 
 `scripts/trim-glb.mjs` (`trimGlb`) is a zero-dependency GLB trimmer that keeps only the
 clips in the pose map and then garbage-collects everything they orphan:
