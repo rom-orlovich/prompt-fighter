@@ -164,6 +164,12 @@ Adding the base-character pack closes that gap. Its free tier ships 2 of the 8 b
 | `GEMINI` | Male | shaven | hulking heavyweight |
 | `LOCAL 7B` | Female | long | compact featherweight |
 
+> **Decided 2026-08-05: the free ("Standard") tier is the permanent answer here.** The pack's
+> paid tier ships eight bodies and would give each fighter a wholly distinct mesh; it was
+> evaluated and **declined**. This is a settled product decision, not a deferred TODO — do not
+> re-propose buying the paid tier, and treat "only two base bodies" as a constraint to design
+> within rather than a gap to close.
+
 Two bodies × four distinct hairstyles × per-fighter height, build and brand tint. That is
 short of four wholly different characters — the pack's paid tier has eight bodies — but the
 select screen now shows four fighters nobody would mistake for each other.
