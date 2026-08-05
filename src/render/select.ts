@@ -199,8 +199,12 @@ export function createSelectScreen(container: HTMLElement, options: SelectScreen
     const dt = Math.min(clock.getDelta(), 0.05);
     const elapsed = clock.getElapsedTime();
     for (const entry of cards) {
-      // One-time re-frame the instant a real measurement is available (both
-      // the body and hair have settled — see `measuredBounds`). Skipped ever
+      // Advance the pose BEFORE ever consulting `measuredBounds()` below, so
+      // its internal elapsed-time tracking (see `fighter.ts`) sees every
+      // tick, not just the ones after a card happens to already be framed.
+      entry.rig.update(dt, elapsed);
+      // One-time re-frame the instant a real measurement is available (body,
+      // hair, pose applied AND settled — see `measuredBounds`). Skipped ever
       // after: nothing about a fighter's height changes post-load.
       if (!entry.framed) {
         const bounds = entry.rig.measuredBounds();
@@ -211,7 +215,6 @@ export function createSelectScreen(container: HTMLElement, options: SelectScreen
           entry.framed = true;
         }
       }
-      entry.rig.update(dt, elapsed);
       entry.renderer.render(entry.scene, entry.camera);
     }
   }

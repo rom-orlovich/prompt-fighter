@@ -137,6 +137,14 @@ const POSE_BLEND: Record<PoseName, number> = {
   win: 0.3
 };
 
+/**
+ * Seconds `measuredBounds()` (see below) waits after the idle pose is applied
+ * before trusting a measurement — comfortably past `POSE_BLEND.idle` (220ms)
+ * so a newly-activated skinned mesh has fully settled out of its pre-animation
+ * rest state before its silhouette is measured for the select-screen camera.
+ */
+const POSE_SETTLE_MARGIN_S = 0.5;
+
 /** Per-pose playback rate. */
 const POSE_TIME_SCALE: Record<PoseName, number> = {
   idle: 0.8,
@@ -340,11 +348,36 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let handBones: THREE.Object3D[] = [];
   let chestBone: THREE.Object3D | null = null;
   let hipBone: THREE.Object3D | null = null;
-  // Gate `measuredBounds()` on BOTH assets having settled (loaded or failed) —
+  // Gate `measuredBounds()` on both assets having settled (loaded or failed) —
   // measuring right after the body loads but before the hair arrives would
-  // frame the camera a beat too tight, missing the hair's margin.
+  // frame the camera a beat too tight, missing the hair's margin — AND on the
+  // idle pose having actually settled into place. The shared clip library
+  // (`Anims.glb`, ~2.2MB) is 10-40x larger than any single hairstyle, so on a
+  // real network the hair reliably finishes loading before the animation
+  // library does: without a pose gate, `measuredBounds()` would take its
+  // one-and-only measurement while the skeleton still sits in its unposed
+  // rest state, not the crouched `Sword_Idle` stance the preview actually
+  // renders in every frame after that (G16).
+  //
+  // A newly-`play()`ed `AnimationAction`'s bound properties don't snap to the
+  // animated pose in a single `update()` tick — verified empirically against
+  // the real preview: measuring `measuredBounds()` immediately after
+  // `poseApplied` goes true intermittently reads a hair mesh still mid-blend
+  // from its pre-animation rest state (its top-of-head vertices land near
+  // body height instead of above it), and the gap needed to clear that
+  // consistently tracks WALL-CLOCK TIME elapsed since the pose was applied,
+  // not frame or `update()` call count — consistent with `POSE_BLEND.idle`
+  // (220ms) still being mid-crossfade. `POSE_SETTLE_MARGIN_S` below waits
+  // comfortably past that before trusting a measurement.
   let bodyLoaded = false;
   let hairSettled = false;
+  let poseApplied = false;
+  /** Elapsed-clock time (see `update`'s `elapsed` param) at which `poseApplied`
+   * first went true — `null` until then. */
+  let poseAppliedAtElapsed: number | null = null;
+  /** Most recent `elapsed` seen by `update` — `measuredBounds()` has no clock
+   * of its own, so it reads this to know how long the pose has had to settle. */
+  let latestElapsed = 0;
   /** Both shoulders — the victory flourish swings from here, not the wrist, so a
    * modest rotation still carries the hand through a wide arc. */
   let upperArmBones: THREE.Object3D[] = [];
@@ -441,6 +474,7 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       nextAction.setEffectiveWeight(1);
     }
     currentAction = nextAction;
+    poseApplied = true;
     // A frozen pose seeks to its held frame and stops there. `update` still runs
     // the mixer so the crossfade into this pose completes.
     if (freeze !== undefined) {
@@ -651,15 +685,27 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     },
 
     measuredBounds() {
-      if (!bodyLoaded || !hairSettled) return null;
+      if (!bodyLoaded || !hairSettled || !poseApplied || poseAppliedAtElapsed === null) return null;
+      // See the `POSE_SETTLE_MARGIN_S` comment above `bodyLoaded`: a
+      // newly-activated pose doesn't finish blending into its animated state
+      // in a single tick, so wait past that before trusting a measurement.
+      if (latestElapsed - poseAppliedAtElapsed < POSE_SETTLE_MARGIN_S) return null;
       // `model` holds only the loaded body scene (and the hair rebound onto it,
       // see above) — never the punch trail, which would otherwise pull the box
-      // out toward the fist. `updateWorldMatrix(true, false)`
-      // forces the whole ancestor chain (group -> holder -> scene) current first,
-      // matching the pattern already used by `boneWorld`/`getWorldPosition`
-      // above, so this is correct regardless of whether a render happened yet.
-      model.updateWorldMatrix(true, false);
-      const box = new THREE.Box3().setFromObject(model);
+      // out toward the fist. `updateWorldMatrix(true, true)` forces the whole
+      // ancestor chain AND every descendant (bones included) current first,
+      // so this is correct regardless of whether a render happened yet.
+      model.updateWorldMatrix(true, true);
+      // `precise: true` makes three.js walk every vertex through its bone
+      // transform instead of taking the mesh's cached `SkinnedMesh.boundingBox`
+      // — which three.js computes lazily on first touch and then NEVER
+      // recomputes on its own (see the class's own docs: "the bounding box
+      // should be recomputed per frame in order to reflect the current
+      // animation state"). Without `precise`, whichever pose happened to be
+      // current the first time ANY code touched this mesh's bounding box would
+      // stick forever, silently reintroducing the exact stale-pose bug the
+      // gates above exist to prevent.
+      const box = new THREE.Box3().setFromObject(model, true);
       return { top: box.max.y, bottom: box.min.y };
     },
 
@@ -695,7 +741,11 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       victoryTime = 0;
     },
 
-    update(dt, _elapsed, real) {
+    update(dt, elapsed, real) {
+      // See `measuredBounds()`: tracks how long the idle pose has had to
+      // settle since `poseApplied` first went true.
+      latestElapsed = elapsed;
+      if (poseApplied && poseAppliedAtElapsed === null) poseAppliedAtElapsed = elapsed;
       // Footwork runs on REAL time so a fighter still gets blown back during the
       // hit-stop freeze — that shove IS the impact, and freezing it out is what
       // made a 20-damage crit look identical to a whiff.
