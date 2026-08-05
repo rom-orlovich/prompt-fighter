@@ -49,7 +49,17 @@ export type PoseName =
 
 export interface FighterRig {
   group: THREE.Group;
-  setPose(pose: PoseName): void;
+  /**
+   * `streak` (G18) is the 1-indexed chain position this pose application
+   * represents. For `attack` it picks the strike BY that position — 1st beat
+   * jab, 2nd cross, 3rd-and-beyond hook — instead of a free-running cursor
+   * that advanced on every punch whether or not a streak was actually
+   * running. For any pose in the cadence set (see `CHAIN_CADENCE_POSES`) it
+   * also tightens the crossfade/playback-rate cadence as the position
+   * climbs, so a chain visibly accelerates. Omit it (or pass 1) outside a
+   * combo chain — the pose behaves exactly as it did before G18.
+   */
+  setPose(pose: PoseName, streak?: number): void;
   /** The pose currently held — lets callers avoid stomping `ko`/`win`. */
   currentPose(): PoseName;
   setCharge(value: number): void;
@@ -98,6 +108,13 @@ export interface FighterRig {
    * (G17; see the "distinct clips" assertion in e2e/fight-feel.test.ts).
    */
   playedClips(): ReadonlySet<string>;
+  /**
+   * The clip name most recently applied for the `attack` pose — `null` until
+   * this rig's first attack. Lets a caller log/assert exactly which strike a
+   * landed blow's own animation was (G18; see the per-streak clip-sequence
+   * assertion in e2e/fight-feel.test.ts).
+   */
+  lastAttackClip(): string | null;
 }
 
 /**
@@ -195,6 +212,60 @@ const POSE_BLEND: Record<PoseName, number> = {
   ko: 0.12,
   win: 0.3
 };
+
+/**
+ * Poses whose crossfade/playback cadence tightens as a combo chain builds
+ * (G18) — the strike itself, and the two reactions that answer it. Every
+ * other pose (idle, windup, guard, dodge, ko, win) keeps its authored pace
+ * regardless of streak; none of them are a beat inside a chain.
+ */
+const CHAIN_CADENCE_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['attack', 'hurt', 'hurtHeavy']);
+/**
+ * Chain position past which cadence stops tightening further — matches the
+ * presentation layer's own escalation cap (`COMBO_CAP_STREAK` in main.ts) so
+ * a long streak stays snappy rather than blurring into an unreadable
+ * flicker past the point the rest of the impact presentation stops scaling.
+ */
+const CHAIN_CADENCE_CAP_STREAK = 5;
+/** Crossfade time is multiplied by this per beat past the first. */
+const CHAIN_BLEND_STEP = 0.82;
+/** Crossfade never speeds up past this fraction of its base `POSE_BLEND` time. */
+const CHAIN_BLEND_FLOOR = 0.45;
+/** Playback-rate multiplier added per beat past the first. */
+const CHAIN_TIME_SCALE_STEP = 0.07;
+/** Playback rate never exceeds this multiple of its base `POSE_TIME_SCALE`. */
+const CHAIN_TIME_SCALE_CAP = 1.35;
+
+/**
+ * How much a pose's blend time and playback rate should tighten at this
+ * chain position (G18) — streak 1 (or no streak at all) is always identity,
+ * so a single blow or the opening beat of a chain plays exactly as before
+ * this loop. `POSE_BLEND`/`POSE_TIME_SCALE` stay the per-pose base values;
+ * this only scales them.
+ */
+function chainCadence(pose: PoseName, streak: number | undefined): { blend: number; timeScale: number } {
+  if (!streak || streak <= 1 || !CHAIN_CADENCE_POSES.has(pose)) return { blend: 1, timeScale: 1 };
+  const beat = Math.min(streak, CHAIN_CADENCE_CAP_STREAK) - 1;
+  return {
+    blend: Math.max(CHAIN_BLEND_FLOOR, Math.pow(CHAIN_BLEND_STEP, beat)),
+    timeScale: Math.min(CHAIN_TIME_SCALE_CAP, 1 + CHAIN_TIME_SCALE_STEP * beat)
+  };
+}
+
+/**
+ * Chain position -> attack clip (G18), replacing the free-running
+ * round-robin cursor that used to advance on every attack whether or not a
+ * streak was actually running — which punch played had no relationship to
+ * where a combo actually was. Beat 1 is always the jab, beat 2 the cross,
+ * beat 3 and beyond the hook, so a chain opens, extends and closes with a
+ * consistent shape. 1-indexed, clamped to the clip list's own length, same
+ * convention as `extendStreak` in main.ts.
+ */
+function attackClipForPosition(position: number): string {
+  const options = POSE_CLIPS.attack;
+  const index = Math.min(Math.max(Math.round(position), 1), options.length) - 1;
+  return options[index]!;
+}
 
 /**
  * Seconds `measuredBounds()` (see below) waits after the idle pose is applied
@@ -505,10 +576,15 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   const variantCursor = new Map<PoseName, number>();
   /** See `playedClips()` on `FighterRig`. */
   const playedClipNames = new Set<string>();
+  /** See `lastAttackClip()` on `FighterRig`. */
+  let lastAttackClipName: string | null = null;
 
-  function clipFor(pose: PoseName): string | null {
+  function clipFor(pose: PoseName, streak?: number): string | null {
     const options = POSE_CLIPS[pose];
     if (!options.length) return null;
+    // `attack` is chosen by chain position when one is known (G18) — see
+    // `attackClipForPosition` — rather than the round-robin cursor below.
+    if (pose === 'attack' && streak !== undefined) return attackClipForPosition(streak);
     // Only advance the cursor for poses that actually have a variant to reach.
     if (options.length === 1) return options[0];
     const next = (variantCursor.get(pose) ?? 0) % options.length;
@@ -516,23 +592,26 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     return options[next];
   }
 
-  function applyPose(pose: PoseName): void {
+  function applyPose(pose: PoseName, streak?: number): void {
     if (!mixer) return;
-    const clipName = clipFor(pose);
+    const clipName = clipFor(pose, streak);
     if (!clipName) return;
     const nextAction = actions.get(clipName);
     if (!nextAction) return; // this rig doesn't have the clip — keep whatever is playing
     playedClipNames.add(clipName);
+    if (pose === 'attack') lastAttackClipName = clipName;
     const freeze = POSE_FREEZE[pose];
     const clamp = CLAMP_POSES.has(pose);
+    // Cadence tightens as the chain builds (G18) — identity at streak <= 1.
+    const cadence = chainCadence(pose, streak);
     nextAction.reset();
     nextAction.setLoop(clamp || freeze !== undefined ? THREE.LoopOnce : THREE.LoopRepeat, Infinity);
     nextAction.clampWhenFinished = clamp || freeze !== undefined;
-    nextAction.timeScale = POSE_TIME_SCALE[pose];
+    nextAction.timeScale = POSE_TIME_SCALE[pose] * cadence.timeScale;
     nextAction.paused = false;
     nextAction.play();
     if (currentAction && currentAction !== nextAction) {
-      currentAction.crossFadeTo(nextAction, POSE_BLEND[pose], false);
+      currentAction.crossFadeTo(nextAction, POSE_BLEND[pose] * cadence.blend, false);
     } else {
       // Re-triggering the clip that is already playing — `windup` and `attack`
       // both use `Punch_Jab`, so this is the common path into a punch, not an
@@ -685,7 +764,7 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   return {
     group,
 
-    setPose(pose) {
+    setPose(pose, streak) {
       // (Re-)entering `win` restarts the flourish's hop/pump cycle from the
       // bottom rather than picking up wherever the last celebration left off.
       if (pose === 'win' && pendingPose !== 'win') victoryTime = 0;
@@ -695,7 +774,7 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
         trailStrength = 1;
         trailPrimed = false;
       }
-      applyPose(pose);
+      applyPose(pose, streak);
     },
 
     currentPose() {
@@ -756,6 +835,10 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
     playedClips() {
       return playedClipNames;
+    },
+
+    lastAttackClip() {
+      return lastAttackClipName;
     },
 
     measuredBounds() {

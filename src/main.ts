@@ -194,6 +194,25 @@ interface DebugBridge {
    * transcript. See `streakSide`/`streakCount` in `handleEvent` (G11).
    */
   presentationCombos: { side: Speaker; count: number }[];
+  /**
+   * Every damaging blow that actually extended a fighter's combo streak this
+   * match (G18) — the chain position it landed at, and the exact attack clip
+   * that threw it. Distinct from `contacts`: this only covers blows that ran
+   * through `extendStreak` (the same ones the HUD combo counter and the
+   * impact-escalation math read), so a blocked hit or a self-damage tick —
+   * neither of which is a beat in a combo chain — never shows up here. See
+   * the per-streak clip-sequence and chain-reset assertions in
+   * e2e/fight-feel.test.ts.
+   *
+   * `followsSuper` is true for the `hit` event a `super` turn always fires
+   * immediately after its own `super` event (see the long comment above
+   * `streakSide`, and `turnSuperFired` below) — that `hit` extends the
+   * streak an extra notch for the SAME physical strike the super's own event
+   * already logged, so it never got a fresh `attack` pose of its own and
+   * must not be held to the position -> clip mapping a genuinely new strike
+   * would be.
+   */
+  comboChain: { side: Speaker; position: number; clip: string | null; followsSuper: boolean }[];
   /** Runs a bundled transcript through the engine with no rendering, no timers
    * and no player input — the fastest way to inspect a deterministic outcome. */
   simulate(file: string): Promise<SimulateResult>;
@@ -258,6 +277,7 @@ window.__pf = {
   audio: audioCounts,
   contacts: [],
   presentationCombos: [],
+  comboChain: [],
   async simulate(file) {
     const transcript = await loadTranscript(`${import.meta.env.BASE_URL}transcripts/${file}`);
     return simulateTranscript(transcript);
@@ -508,10 +528,12 @@ async function startMatch(file: string): Promise<void> {
   window.__pf.koAt = null;
   window.__pf.contacts = [];
   window.__pf.presentationCombos = [];
+  window.__pf.comboChain = [];
   openContacts.length = 0;
   standingRootY.p1 = 0;
   standingRootY.p2 = 0;
   turnAttacker = null;
+  turnSuperFired = null;
   resetStreak();
 
   const p1 = profileFor(matchup.p1.fighter);
@@ -759,6 +781,20 @@ function resetStreak(): void {
 }
 
 /**
+ * The chain position the NEXT landed blow from `side` would occupy if it
+ * connects (G18) — read at the moment an `attack` fires, before its
+ * `hit`/`blocked`/`whiff` outcome is known, so the STRIKE itself (not just
+ * the reaction after it lands) can be chosen by chain position — see the
+ * `case 'attack'` below and `attackClipForPosition` in `fighter.ts`.
+ * 1-indexed, same convention as `extendStreak`: the fighter already
+ * mid-streak throws the next beat; anyone else (or nobody) opens back at
+ * beat 1.
+ */
+function predictedChainPosition(side: Speaker): number {
+  return side === streakSide ? streakCount + 1 : 1;
+}
+
+/**
  * How far a landed blow's presentation escalates with `streak` (G14).
  *
  * Streak 1 (the opening blow, or no combo at all) always resolves to exactly
@@ -784,10 +820,37 @@ function comboScale(streak: number, step: number): number {
   return 1 + (clamped - 1) * step;
 }
 
+/**
+ * Chain position at which a victim's reaction escalates to `hurtHeavy` on
+ * chain position alone (G18), composing with — not replacing — the existing
+ * crit/counter/super rule at each call site below: either one being true is
+ * enough to earn the heavier reaction. 3 matches `attack`'s own beat mapping
+ * in `fighter.ts` (`attackClipForPosition`): the hook is the 3rd-and-beyond
+ * beat, so the reaction it provokes is the heaviest one too — a chain's
+ * finisher looks and feels like one.
+ */
+const CHAIN_HEAVY_REACTION_STREAK = 3;
+
 /** The real attacker of the in-flight turn, from its `attack` event — used to
  * tell a `hit` landed on the opponent apart from a self-damage `hit` (e.g. an
  * overreach ability), which the `hit` event alone can't distinguish. */
 let turnAttacker: Speaker | null = null;
+
+/**
+ * Set by `case 'super'` below, cleared by the next `case 'attack'` (i.e. once
+ * per turn). A super turn always fires its own `super` event AND a following
+ * `hit`/`blocked` event for the same physical strike — `combat.ts` computes
+ * the super's damage once, announces it via `super`, then runs it through the
+ * exact same block/counter/shield pipeline every other blow uses, which is
+ * where the `hit` actually comes from (see the long comment above
+ * `streakSide` in this file for why that's intentional: it's two distinct
+ * on-screen beats, the flourish then the impact). Both extend the streak, but
+ * only ONE `attack` pose was ever thrown for either of them — this is what
+ * lets `case 'hit'` below tell "a genuinely new punch was thrown" apart from
+ * "the super I already logged this turn is having its credibility change
+ * applied", see `followsSuper` on `DebugBridge.comboChain`.
+ */
+let turnSuperFired: Speaker | null = null;
 
 const LOUD_LABELS = new Set([
   'CITED EVIDENCE',
@@ -808,11 +871,17 @@ function handleEvent(event: CombatEvent): void {
       // Step in on the strike. The fighters used to stand a fixed 5.1 units
       // apart for the whole match, so every punch was thrown into empty air —
       // this, plus the tightened neutral spacing, is what makes a blow connect.
-      rigs[event.by].setPose('attack');
+      // The strike is picked by chain position, not a free-running cursor
+      // (G18): 1st beat jab, 2nd cross, 3rd-and-beyond hook. `predictedChainPosition`
+      // reads the CURRENT streak, before this attack's own outcome is known.
+      rigs[event.by].setPose('attack', predictedChainPosition(event.by));
       rigs[event.by].lunge(LUNGE_STRENGTH);
       sfx.whoosh();
       if (LOUD_LABELS.has(event.label)) hud.announce(event.label);
       turnAttacker = event.by;
+      // A fresh strike was just thrown — any `super` this new turn fires is
+      // its own turn, not a continuation of a previous one.
+      turnSuperFired = null;
       break;
     }
 
@@ -824,6 +893,7 @@ function handleEvent(event: CombatEvent): void {
       // ability) doesn't extend anyone's streak — only blows that actually
       // landed on the opponent do, and only those get the escalation below.
       let streak = 1;
+      const extendsChain = event.target !== turnAttacker && turnAttacker !== null && event.damage > 0;
       if (event.target !== turnAttacker && turnAttacker !== null) {
         streak = extendStreak(turnAttacker, event.damage);
       }
@@ -831,10 +901,27 @@ function handleEvent(event: CombatEvent): void {
       const hitstopScale = comboScale(streak, COMBO_HITSTOP_STEP);
 
       const point = beginContact('hit', attacker, event.target, event.damage, event.crit, streak);
+      // G18: log which clip actually threw this beat, at its chain position —
+      // only for blows that really extended the chain (see `extendsChain`).
+      // `followsSuper` flags the credibility-change `hit` that always
+      // follows this turn's own `super` event (see `turnSuperFired`): same
+      // physical strike, no fresh `attack` pose, so its clip is expected to
+      // equal the super's, not the position -> clip mapping.
+      if (extendsChain) {
+        window.__pf.comboChain.push({
+          side: attacker,
+          position: streak,
+          clip: rigs[attacker].lastAttackClip(),
+          followsSuper: turnSuperFired === attacker
+        });
+      }
 
-      // A crit gets the heavier reaction (G17) — same rule a counter/super
-      // already gets below, so every blow staged as dramatic reads as one.
-      rig.setPose(event.damage > 0 ? (event.crit ? 'hurtHeavy' : 'hurt') : 'idle');
+      // A crit OR a deep-enough chain position gets the heavier reaction
+      // (G17 for crit; G18 composes chain position on top — see
+      // `CHAIN_HEAVY_REACTION_STREAK` — so a combo's finisher reads as hard
+      // as a crit even without one).
+      const heavyReaction = event.crit || streak >= CHAIN_HEAVY_REACTION_STREAK;
+      rig.setPose(event.damage > 0 ? (heavyReaction ? 'hurtHeavy' : 'hurt') : 'idle', streak);
       rig.flash(1);
       rig.knockback(
         (KNOCKBACK_BASE + event.damage * KNOCKBACK_PER_DAMAGE) * (event.crit ? KNOCKBACK_CRIT : 1)
@@ -880,7 +967,7 @@ function handleEvent(event: CombatEvent): void {
     case 'counter': {
       hud.announce('COUNTER!');
       const target: Speaker = event.by === 'p1' ? 'p2' : 'p1';
-      rigs[event.by].setPose('attack');
+      rigs[event.by].setPose('attack', predictedChainPosition(event.by));
       rigs[event.by].lunge(LUNGE_STRENGTH);
       const victim = rigs[target];
       // A counter is the defender striking back — it both lands a damaging
@@ -893,9 +980,17 @@ function handleEvent(event: CombatEvent): void {
       const scale = comboScale(streak, COMBO_STEP);
       const hitstopScale = comboScale(streak, COMBO_HITSTOP_STEP);
       const point = beginContact('counter', event.by, target, event.damage, true, streak);
+      if (event.damage > 0) {
+        window.__pf.comboChain.push({
+          side: event.by,
+          position: streak,
+          clip: rigs[event.by].lastAttackClip(),
+          followsSuper: false
+        });
+      }
       // A counter is always the heavier reaction (G17) — it's already always
       // treated as a crit for damage/FX purposes above.
-      victim.setPose('hurtHeavy');
+      victim.setPose('hurtHeavy', streak);
       victim.flash(1.4);
       victim.knockback(0.9 + event.damage * KNOCKBACK_PER_DAMAGE);
       stage.shake(0.95 * scale);
@@ -954,8 +1049,11 @@ function handleEvent(event: CombatEvent): void {
       const target: Speaker = event.by === 'p1' ? 'p2' : 'p1';
       const attacker = rigs[event.by];
       const victim = rigs[target];
-      attacker.setPose('attack');
+      attacker.setPose('attack', predictedChainPosition(event.by));
       attacker.lunge(1.25);
+      // Marks the `hit` this same turn is about to fire (see `turnSuperFired`'s
+      // doc comment) as a continuation of THIS strike, not a fresh one.
+      turnSuperFired = event.by;
       // A super is its own landed blow for streak purposes, on top of whatever
       // `hit`/`blocked` event follows it for the actual credibility change —
       // see the comment above `streakSide` for why. Its own escalation rides
@@ -963,9 +1061,17 @@ function handleEvent(event: CombatEvent): void {
       const streak = extendStreak(event.by, event.damage);
       const scale = comboScale(streak, COMBO_STEP);
       const point = beginContact('super', event.by, target, 0, true, streak);
+      if (event.damage > 0) {
+        window.__pf.comboChain.push({
+          side: event.by,
+          position: streak,
+          clip: attacker.lastAttackClip(),
+          followsSuper: false
+        });
+      }
       // A super is always the heaviest reaction (G17) — it already always
       // knocks back the hardest of any event type below.
-      victim.setPose('hurtHeavy');
+      victim.setPose('hurtHeavy', streak);
       victim.flash(1.8);
       victim.knockback(1.4);
       // The named-special FX carry their own themed burst/ring and shake the

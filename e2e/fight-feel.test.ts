@@ -577,4 +577,105 @@ test.describe('fight feel', () => {
 
     expect(errors).toEqual([]);
   });
+
+  // --- G18: a running combo must read as a CHAIN, not repeated single hits -
+  //
+  // Before this loop `clipFor` in `fighter.ts` picked the attack clip from a
+  // global round-robin cursor that advanced on every attack whether or not a
+  // streak was running, so which punch played had no relationship to where a
+  // combo actually was, and the victim's reaction was chosen by crit/counter/
+  // super alone — never by chain position. `window.__pf.comboChain` (see
+  // `main.ts`) now logs exactly the blows that extended a real streak, in
+  // order, each with the chain position it landed at and the clip that threw
+  // it — a maximal run of consecutive same-side entries IS one combo streak,
+  // since a different attacker landing a damaging blow is precisely what
+  // starts a new streak. Runs the microservices stage (cardIndex 0), which
+  // the G14 comment above notes reaches a 5-streak.
+  test('a combo chain reads as a sequence: strikes follow chain position, and breaking resets it', async ({
+    page
+  }) => {
+    test.setTimeout(180000);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+
+    await startMatch(page, FIGHT, 0);
+    await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
+      timeout: 120000
+    });
+    // Let the final impact's measurement window close before reading it back.
+    await page.waitForTimeout(1800);
+
+    const chain: { side: string; position: number; clip: string | null; followsSuper: boolean }[] =
+      await page.evaluate(() => (window as any).__pf.comboChain);
+    expect(chain.length, 'chain-extending blows recorded in a real match').toBeGreaterThan(3);
+
+    // Split into runs on every `position === 1` — that IS a streak break,
+    // whether it came from the other side landing a blow or a round ending
+    // (`resetStreak` on `roundEnd`/`matchEnd`, see main.ts). Grouping by
+    // `side` instead would be wrong: the same fighter can easily open the
+    // very next round too, and that is a fresh run, not a continuation of
+    // the previous one — this measured run split on a real match caught
+    // exactly that the first time this test was written.
+    const runs: (typeof chain)[] = [];
+    for (const entry of chain) {
+      if (entry.position === 1 || runs.length === 0) runs.push([entry]);
+      else runs[runs.length - 1]!.push(entry);
+    }
+    console.log(
+      'combo chain runs observed (microservices, undriven):',
+      JSON.stringify(runs.map((run) => `streak of ${run.length} (${run[0]!.side}): ${run.map((e) => e.clip).join(', ')}`))
+    );
+
+    // (a) MEASURED: every landed blow's clip follows the intended position ->
+    // clip mapping (1 jab, 2 cross, 3-and-beyond hook — see
+    // `attackClipForPosition` in `fighter.ts`), checked against every entry
+    // in the whole match, not just inside a long run. `followsSuper` entries
+    // are excluded: a super turn always fires its own `super` event PLUS a
+    // `hit` event for the same physical strike's credibility change (see
+    // `turnSuperFired` in main.ts and the long comment above `streakSide`) —
+    // only ONE `attack` pose was ever thrown for that pair, so the follow-up
+    // `hit` is expected to repeat the super's own clip, not advance to the
+    // next position's clip.
+    const EXPECTED_CLIP = ['Punch_Jab', 'Punch_Cross', 'Melee_Hook'];
+    const strikes = chain.filter((e) => !e.followsSuper);
+    expect(strikes.length, 'blows backed by a genuinely thrown strike').toBeGreaterThan(3);
+    for (const entry of strikes) {
+      const expectedClip = EXPECTED_CLIP[Math.min(entry.position, EXPECTED_CLIP.length) - 1];
+      expect(entry.clip, `beat ${entry.position} plays ${expectedClip} (full chain: ${JSON.stringify(chain)})`).toBe(
+        expectedClip
+      );
+    }
+    // And within a streak of >= 3 the strikes are NOT all the same clip —
+    // the mapping above already implies this once a run is long enough, but
+    // it is asserted directly too, as its own check.
+    const longRuns = runs.filter((run) => run.filter((e) => !e.followsSuper).length >= 3);
+    expect(longRuns.length, 'at least one streak of length >= 3 observed').toBeGreaterThan(0);
+    for (const run of longRuns) {
+      const clips = run.filter((e) => !e.followsSuper).map((e) => e.clip);
+      expect(new Set(clips).size, `streak of ${run.length} strikes are not all the same clip (${clips.join(', ')})`).toBeGreaterThan(
+        1
+      );
+    }
+
+    // (b) MEASURED: the chain RESETS. This is the specific bug being fixed —
+    // the old global cursor kept advancing across a streak break, so the
+    // first blow of a new run would have picked up wherever the cursor left
+    // off (Cross or Hook) instead of restarting at the jab. More than one
+    // run must exist (i.e. a break actually happened during this match), and
+    // every run — not just the first — opens at beat 1 on the jab, and
+    // climbs 1, 2, 3, ... with no gaps.
+    expect(runs.length, 'more than one streak observed, so a reset actually happened').toBeGreaterThan(1);
+    for (const run of runs) {
+      expect(run[0]!.position, `run opens at beat 1 (${JSON.stringify(run)})`).toBe(1);
+      expect(
+        run[0]!.clip,
+        `run opens on the jab, not wherever the previous run's cursor left off (${JSON.stringify(run)})`
+      ).toBe('Punch_Jab');
+      run.forEach((entry, i) => {
+        expect(entry.position, `beat ${i + 1} of streak ${JSON.stringify(run)}`).toBe(i + 1);
+      });
+    }
+
+    expect(errors).toEqual([]);
+  });
 });
