@@ -101,16 +101,35 @@ src/
   sources/
     types.ts       # MatchSource: start() · onTurnStart · onTurnChunk · onTurnEnd
     replay.ts      # bundled transcript, simulated streaming — no key required
-    live.ts        # SSE from the local server — real models
+    live.ts        # two FighterBrains driving turns through the same MatchSource seam
+  brains/          # FighterBrain: local.ts (deterministic, no key) · openrouter.ts (real models)
   render/          # dumb consumer of CombatEvent
     scene.ts       # Three.js scene, camera, arena, lights
     fighter.ts     # procedural low-poly rig + keyframe pose animation
     fx.ts          # hitstop, screen shake, particles, damage numbers
     hud.ts         # DOM overlay: bars, combo, meter, subtitles, action picker
+  cli/             # `npm run fight` — headless local match, or --serve / --connect
   main.ts          # wiring only
-server/            # optional live mode (Node + OpenRouter). Not needed for the demo.
+server/            # live mode's authoritative match (node:http, SSE + POST /turn).
+                   # Node + OpenRouter for real models; the local brain needs neither.
 transcripts/       # bundled demo fights (JSON)
 ```
+
+### Live mode (implemented)
+
+Two deliverables sit behind the `MatchSource`/`FighterBrain` seams above, both reusing
+`engine/` unchanged: `npm run fight` (a full local match in a terminal, driven by
+`sources/live.ts` in-process) and `npm run fight -- --serve` / `--connect` (a `server/`
+process holding the one authoritative `FightEngine`, with two remote client processes
+submitting turns over SSE + POST — see `tests/live-mode-parity.test.ts` for the proof
+that neither path ever resolves a turn differently than calling the engine directly).
+`FighterBrain` is the one seam that decides what a fighter "says": `brains/local.ts` is
+deterministic and needs no key, so both deliverables run with zero setup;
+`brains/openrouter.ts` calls a real model when `OPENROUTER_API_KEY` is set and fails
+with an actionable error, never a stack trace, when it isn't. The CLI's turn loop
+(`cli/runner.ts`) reuses `simulate.ts`'s own two-tier termination strategy — a generous
+turn cap, then a timeout-guard loop that forces round decisions by credibility — so a
+live match can never spin forever. See the README's "Live mode" section for usage.
 
 ### Turn data flow
 
@@ -271,7 +290,9 @@ no keys committed, and live mode is opt-in.
 
 **In the POC:** 3D arena and two animated fighters · replay source with demo transcripts ·
 analyzer, combat resolver and their tests · full HUD · timed player action window · hitstop,
-shake and particles · rounds and KO flow · README · public repo.
+shake and particles · rounds and KO flow · README · public repo · **live mode** — a headless
+CLI match and a two-process networked match, both driven by a swappable local/OpenRouter
+`FighterBrain`, both reusing the POC's own engine unchanged (see §4).
 
-**Deferred:** live model mode · tournament and roster meta · LLM announcer for flavor text ·
-larger move set · mobile touch controls.
+**Deferred:** tournament and roster meta · LLM announcer for flavor text · larger move set ·
+mobile touch controls.

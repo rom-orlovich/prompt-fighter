@@ -10,7 +10,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:node": "vite build --config vite.node.config.ts",
+    "fight": "npm run build:node --silent && node dist-node/fight.mjs"
   },
   "keywords": [],
   "author": "",

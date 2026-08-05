@@ -69,8 +69,12 @@ src/
     match.ts      rounds, KO, best-of-three
   sources/    where turns come from
     replay.ts     bundled transcripts, simulated streaming (no key needed)
+    live.ts       two FighterBrains driving turns (local, or real models over OpenRouter)
   render/     dumb consumer of CombatEvent
     scene.ts · fighter.ts · fx.ts · hud.ts · audio.ts
+  brains/     FighterBrain — local (no key) and OpenRouter (real models) implementations
+  cli/        `npm run fight` — a full headless match in a terminal, no browser
+server/       node:http — the authoritative match for two remote clients (SSE + POST /turn)
 ```
 
 The engine cannot see the screen and the renderer cannot see the rules. Swapping the
@@ -86,10 +90,35 @@ Every fighter is procedural geometry and every sound is synthesized at runtime. 
 no art or audio assets in this repository, which is why the clone is small and the license
 is uncomplicated.
 
+## Live mode
+
+Two AI fighters actually arguing, driven by a swappable **fighter brain** — no browser
+required. Both a local CLI match and a two-process networked match reuse the exact same
+engine as the demo above; nothing in `src/engine/` changes for either.
+
+```bash
+# Full local match, no key, no network — both fighters use the deterministic local brain:
+npm run fight
+
+# Networked: one process holds the authoritative match, two more connect as p1/p2 and
+# exchange turns through it over SSE + POST.
+npm run fight -- --serve --port 8991
+npm run fight -- --connect http://127.0.0.1:8991 --side p1   # separate terminal
+npm run fight -- --connect http://127.0.0.1:8991 --side p2   # separate terminal
+```
+
+By default every fighter uses the **local brain** — deterministic, no key, no network,
+derived from the running match context (see `src/brains/local.ts`). Set
+`OPENROUTER_API_KEY` (copy `.env.example` to `.env`) and pass `--brain openrouter` to have
+a fighter's lines come from a real model instead; with no key, that path fails immediately
+with an actionable error rather than a stack trace or a silent fallback. `--p1-brain` /
+`--p2-brain` pick per side; `--p1` / `--p2` / `--topic` name the fighters and the debate.
+
+`npm run fight` first bundles `src/cli/fight.ts` for Node (`vite build --config
+vite.node.config.ts`, no new runtime dependency) into `dist-node/fight.mjs`, then runs it.
+
 ## Roadmap
 
-- **Live mode** — two real models over a small local server, same engine, `MatchSource`
-  swapped. The interface is already in place.
 - Tournament ladder and a bigger roster
 - An LLM commentator for flavor callouts, on top of the deterministic mechanics
 - Touch controls
