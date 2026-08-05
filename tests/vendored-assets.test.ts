@@ -31,7 +31,9 @@ const EXPECTED_CLIPS = [
   'Melee_Hook',
   'Hit_Knockback',
   'Idle_Shield_Loop',
-  'Slide_Start'
+  'Slide_Start',
+  // G20a, vendored from UAL1 — see KEEP_CLIPS in scripts/vendor-characters.mjs.
+  'Jump_Start'
 ].sort();
 
 /** Every clip `POSE_CLIPS` in src/render/fighter.ts can ask the mixer for. */
@@ -48,7 +50,9 @@ const POSE_CLIPS = [
   'Melee_Hook',
   'Hit_Knockback',
   'Idle_Shield_Loop',
-  'Slide_Start'
+  'Slide_Start',
+  // G20a
+  'Jump_Start'
 ];
 
 function load(asset: string) {

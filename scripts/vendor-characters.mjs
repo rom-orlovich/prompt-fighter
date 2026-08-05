@@ -84,7 +84,18 @@ export const KEEP_CLIPS = [
   'Hit_Chest',
   'Death01',
   'Dance_Loop',
-  'Walk_Loop'
+  'Walk_Loop',
+  // `Jump_Start` (G20a) — a real jump, vendored from UAL1. `Jump_Loop`/`Jump_Land`
+  // were looked at too (see the G20 done-marker) and rejected: `Jump_Start`
+  // clamp-held on its own last frame already reads as a clean, held mid-air
+  // pose, so sequencing a 3-part start/loop/land clip through this rig's
+  // single-clip-per-pose machinery would add real complexity for a look that's
+  // already there in one clip. UAL2's `NinjaJump_*` was looked at side by side
+  // too and rejected: its launch leans the torso forward with the arms swept
+  // back, which reads too close to `dodge` (`Slide_Start`, a low duck-and-lean)
+  // from this same 3/4 camera — `Jump_Start`'s knee-driven vertical launch
+  // stays clearly distinct from every other pose already in the vocabulary.
+  'Jump_Start'
 ];
 
 /**

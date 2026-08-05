@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { SUPER_NAMES } from '../src/engine/combat';
 
 /**
  * Fight-feel regression suite.
@@ -69,6 +70,42 @@ const median = (values: number[]): number => {
   return sorted[Math.floor(sorted.length / 2)]!;
 };
 
+/** Every super's display name, e.g. "CONFIDENT FABRICATION" — a super-kind
+ * ability's `AbilityDef.name` always equals its owner's `SUPER_NAMES` entry
+ * (see `tests/abilities.test.ts`), so this is how G20b tells a super-kind
+ * `ability` event apart from a passive one without importing `abilities.ts`
+ * into a Playwright spec. */
+const SUPER_ABILITY_NAMES = new Set(Object.values(SUPER_NAMES));
+
+/**
+ * G20b: splits a real match's `ability` events into meter-full supers and
+ * combo-triggered specials. A super-kind ability event belongs to a
+ * meter-full super turn if a `super` CombatEvent already fired since the last
+ * `attack` — exactly the window `case 'ability'` in `main.ts` shares with
+ * `case 'super'` for the same physical strike (see `turnSuperFired`) — so
+ * anything left over fired WITHOUT the meter being full: the combo-earned
+ * path (`COMBO_SPECIAL_CHAIN_THRESHOLD` in `src/engine/abilities.ts`).
+ */
+function splitSpecials(events: { type: string; name?: string }[]): {
+  meterFullSupers: number;
+  comboSpecials: number;
+} {
+  let meterFullSupers = 0;
+  let comboSpecials = 0;
+  let turnHasSuper = false;
+  for (const e of events) {
+    if (e.type === 'attack') turnHasSuper = false;
+    if (e.type === 'super') {
+      meterFullSupers += 1;
+      turnHasSuper = true;
+    }
+    if (e.type === 'ability' && e.name && SUPER_ABILITY_NAMES.has(e.name) && !turnHasSuper) {
+      comboSpecials += 1;
+    }
+  }
+  return { meterFullSupers, comboSpecials };
+}
+
 test.describe('fight feel', () => {
   test('fighters close distance, connect, knock back and shake the camera', async ({ page }) => {
     test.setTimeout(180000);
@@ -95,7 +132,39 @@ test.describe('fight feel', () => {
     // LOOKED-AT half is the screenshot specs below and the G17 done-marker).
     const playedClips: string[] = await page.evaluate(() => (window as any).__pf.playedClips());
     console.log('distinct clips played in a real match:', playedClips.sort().join(', '));
-    expect(playedClips.length, `distinct clips played (${playedClips.join(', ')})`).toBeGreaterThanOrEqual(6);
+    // G20a adds one more clip (`Jump_Start`) to the vocabulary this floor
+    // already measures — raised from 6 to 7 so it's part of what this
+    // assertion actually requires, not just headroom it happens to clear.
+    expect(playedClips.length, `distinct clips played (${playedClips.join(', ')})`).toBeGreaterThanOrEqual(7);
+
+    // --- G20a: a jump actually goes live in a real, undriven match -----------
+    // `playedClips` above already proves the mixer really played `Jump_Start`
+    // (not just that it was vendored); `posesSeen` proves a real rendered
+    // frame (simulated timer under `?fast=1`, see `stage.startSimulation`)
+    // actually read `jump` back as the CURRENT pose at least once — the
+    // same-synchronous-batch trap this file's own comments warn about would
+    // leave a pose requested but never observed here.
+    expect(playedClips, 'Jump_Start actually played').toContain('Jump_Start');
+    const p1Poses: string[] = await page.evaluate(() => (window as any).__pf.posesSeen('p1'));
+    const p2Poses: string[] = await page.evaluate(() => (window as any).__pf.posesSeen('p2'));
+    console.log('poses observed live: p1', p1Poses.sort().join(', '), '| p2', p2Poses.sort().join(', '));
+    expect(p1Poses.includes('jump') || p2Poses.includes('jump'), 'jump pose observed live on either side').toBe(
+      true
+    );
+    const grappleAttacks = (await page.evaluate(() => (window as any).__pf.events)).filter(
+      (e: any) => e.type === 'attack' && e.kind === 'GRAPPLE'
+    ).length;
+    console.log('GRAPPLE attacks fired (jump-eligible turns) this match:', grappleAttacks);
+    expect(grappleAttacks, 'at least one GRAPPLE turn to have earned a jump').toBeGreaterThan(0);
+
+    // --- G20b: a combo-triggered special fires without the meter being full,
+    // and a meter-full super still fires exactly as it did before this loop.
+    const specials = splitSpecials(await page.evaluate(() => (window as any).__pf.events));
+    console.log('meter-full supers:', specials.meterFullSupers, '| combo-triggered specials:', specials.comboSpecials);
+    expect(specials.meterFullSupers, 'meter-full supers still fire').toBeGreaterThan(0);
+    expect(specials.comboSpecials, 'a combo-triggered special fires without the meter being full').toBeGreaterThan(
+      0
+    );
 
     const atRest = contacts.filter((c) => c.atRest);
     expect(atRest.length, 'blows landed from a neutral start').toBeGreaterThan(0);
@@ -675,6 +744,77 @@ test.describe('fight feel', () => {
         expect(entry.position, `beat ${i + 1} of streak ${JSON.stringify(run)}`).toBe(i + 1);
       });
     }
+
+    expect(errors).toEqual([]);
+  });
+
+  // --- G20: a jump and a combo-triggered special must both be LOOKED AT ----
+  //
+  // The MEASURED half of both checks lives in the first "fight feel" spec
+  // above (`playedClips`/`posesSeen` for the jump, `splitSpecials` for the
+  // special) — this is the LOOKED-AT half: a jump that reads as a twitch, or
+  // a special indistinguishable from a normal hit, is a FAIL no measurement
+  // alone can catch. Needs real rendering, same self-skip as G9/G14.
+  test('a jump and a combo-triggered special are both visually legible, looked at on a real GPU', async ({
+    page
+  }) => {
+    test.setTimeout(180000);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+
+    await page.goto('/');
+    const renderer = await page.evaluate(() => {
+      const probe = document.createElement('canvas');
+      const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+      if (!gl) return 'none';
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : 'unknown';
+    });
+    test.skip(
+      /swiftshader|llvmpipe|software|none/i.test(renderer),
+      `software rasteriser (${renderer}) cannot sustain the render loop — run with --headed on a real GPU`
+    );
+
+    // cardIndex 0 (microservices): the same stage G14/G18 rely on reaching a
+    // deep combo chain, and the one measurably producing GRAPPLE turns.
+    await startMatch(page, '/?fast=1&hold=1&draw=1', 0);
+
+    mkdirSync(SHOTS, { recursive: true });
+    let jumpShot: string | null = null;
+    let specialShot: string | null = null;
+    // Tracks the RUNNING count from `splitSpecials`, not just "an ability
+    // event fired" — a meter-full super also fires super-kind `ability`
+    // events (see `splitSpecials`), so only a rise in `comboSpecials`
+    // specifically (never `meterFullSupers`) means THIS poll caught a
+    // combo-triggered special, not a meter-full one.
+    let lastComboSpecials = 0;
+    const deadline = Date.now() + 120000;
+
+    while ((!jumpShot || !specialShot) && Date.now() < deadline) {
+      if (!jumpShot) {
+        const rigs = await page.evaluate(() => (window as any).__pf.rigs);
+        if (rigs.p1.pose === 'jump' || rigs.p2.pose === 'jump') {
+          await page.waitForTimeout(150); // let the crossfade settle into a clean frame
+          jumpShot = join(SHOTS, 'jump.png');
+          await page.screenshot({ path: jumpShot });
+        }
+      }
+      if (!specialShot) {
+        const events: any[] = await page.evaluate(() => (window as any).__pf.events);
+        const { comboSpecials } = splitSpecials(events);
+        if (comboSpecials > lastComboSpecials) {
+          await page.waitForTimeout(80); // catch the fx.special burst/ring while it's live
+          specialShot = join(SHOTS, 'combo-special.png');
+          await page.screenshot({ path: specialShot });
+        }
+        lastComboSpecials = comboSpecials;
+      }
+      if (await page.evaluate(() => (window as any).__pf.matchEnded)) break;
+      await page.waitForTimeout(40);
+    }
+
+    expect(jumpShot, 'captured the jump pose live').not.toBeNull();
+    expect(specialShot, 'captured a combo-triggered special live').not.toBeNull();
 
     expect(errors).toEqual([]);
   });

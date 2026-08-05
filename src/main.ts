@@ -231,6 +231,17 @@ interface DebugBridge {
    * see the "distinct clips" assertion in e2e/fight-feel.test.ts.
    */
   playedClips(): string[];
+  /**
+   * Every abstract `PoseName` actually observed live on `side` — i.e. read
+   * back from `rig.currentPose()` inside a REAL rendered frame (`stage.
+   * onFrame`), not merely requested via `setPose()` (G20a). This is the
+   * measured half of "a pose actually goes live": a pose set from an event
+   * handler and crossfaded away before a frame ever paints it (the
+   * same-synchronous-batch trap `comboBreakVictim`/`jumpSide` in this file
+   * exist to avoid) would never show up here even though `setPose` was
+   * called. See the jump assertion in e2e/fight-feel.test.ts.
+   */
+  posesSeen(side: Speaker): string[];
 }
 
 declare global {
@@ -292,6 +303,9 @@ window.__pf = {
   playedClips() {
     if (!rigs) return [];
     return [...new Set([...rigs.p1.playedClips(), ...rigs.p2.playedClips()])];
+  },
+  posesSeen(side) {
+    return [...posesSeen[side]];
   }
 };
 
@@ -324,8 +338,27 @@ let roundClock = ROUND_SECONDS;
  */
 let comboBreakVictim: Speaker | null = null;
 
+/**
+ * Set by `case 'attack'` below whenever this turn's move is `GRAPPLE`-kind
+ * (G20a — `isQuestion` in the analyzer, "TURNED THE QUESTION"), consumed (and
+ * cleared) by the very next `onTurnEnd`'s recovery beat — same deferred slot
+ * `comboBreakVictim`/`dodge` above already use, and for the same reason: a
+ * GRAPPLE that gets FACT_STRIKE-countered (its tags can still include `hedge`
+ * even though its kind is GRAPPLE, not HEAVY) fires a `counter` event THIS
+ * SAME turn that re-poses its target — this turn's attacker — to `hurtHeavy`
+ * (see `case 'counter'`). A `jump` set inline from `case 'attack'` would be
+ * crossfaded over before a frame ever rendered it, the exact trap documented
+ * on `comboBreakVictim` below. Always the ATTACKER's own side (`event.by`),
+ * which is structurally disjoint from `comboBreakVictim` (always the
+ * attacker's OPPONENT) — the two flags can never collide on the same side in
+ * the same turn.
+ */
+let jumpSide: Speaker | null = null;
+
 /** Hip heights seen while each fighter was upright — the K.O. drop is measured against these. */
 const standingRootY: Record<Speaker, number> = { p1: 0, p2: 0 };
+/** See `posesSeen` on `DebugBridge` (G20a). */
+const posesSeen: Record<Speaker, Set<PoseName>> = { p1: new Set(), p2: new Set() };
 /** Impacts still being measured; each is dropped once its window closes. */
 const openContacts: { record: ContactRecord; deadline: number }[] = [];
 
@@ -390,6 +423,9 @@ stage.onFrame((dt, elapsed, real) => {
         standingRootY[side] = Math.max(standingRootY[side], live[side].root[1]);
         live[side].standingRootY = standingRootY[side];
       }
+      // G20a: records a pose only once a real frame has actually painted it —
+      // see `posesSeen` on `DebugBridge`.
+      posesSeen[side].add(live[side].pose);
     }
     window.__pf.rigs = live;
     const camera = stage.camera.position;
@@ -532,6 +568,8 @@ async function startMatch(file: string): Promise<void> {
   openContacts.length = 0;
   standingRootY.p1 = 0;
   standingRootY.p2 = 0;
+  posesSeen.p1.clear();
+  posesSeen.p2.clear();
   turnAttacker = null;
   turnSuperFired = null;
   resetStreak();
@@ -607,6 +645,10 @@ const handlers: StreamHandlers = {
     // happens to run first. A per-call local has no such race.
     const dodgeSide = comboBreakVictim;
     comboBreakVictim = null;
+    // See the long comment on `jumpSide` above for why this is captured and
+    // cleared here, the same way `dodgeSide` is.
+    const jumpingSide = jumpSide;
+    jumpSide = null;
 
     setTimeout(() => {
       if (!engine || engine.matchOver || !rigs) return;
@@ -619,7 +661,12 @@ const handlers: StreamHandlers = {
         if (TERMINAL_POSES.has(rigs[side].currentPose())) continue;
         // G17: a fighter whose opponent's combo broke THIS turn ducks/leans
         // instead of going straight back to idle — see `case 'comboBreak'`.
-        rigs[side].setPose(side === dodgeSide ? 'dodge' : 'idle');
+        // G20a: a fighter who threw a GRAPPLE this turn hops clear instead —
+        // see `jumpSide`. `dodgeSide` and `jumpingSide` can never name the
+        // same side in the same turn (see `jumpSide`'s doc comment), so this
+        // is never ambiguous.
+        const pose = side === dodgeSide ? 'dodge' : side === jumpingSide ? 'jump' : 'idle';
+        rigs[side].setPose(pose);
       }
     }, RECOVERY_MS);
   }
@@ -882,6 +929,10 @@ function handleEvent(event: CombatEvent): void {
       // A fresh strike was just thrown — any `super` this new turn fires is
       // its own turn, not a continuation of a previous one.
       turnSuperFired = null;
+      // G20a: a GRAPPLE ("TURNED THE QUESTION") earns a jump at THIS turn's
+      // recovery beat — see `jumpSide`'s doc comment for why it's deferred
+      // rather than applied here.
+      if (event.kind === 'GRAPPLE') jumpSide = event.by;
       break;
     }
 

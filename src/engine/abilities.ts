@@ -43,6 +43,15 @@ export interface AbilityContext {
   /** Damage this turn would deal before any ability adjusts it (combo-multiplied,
    * or the legacy super formula when `isSuper` is true). */
   baseDamage: number;
+  /**
+   * The attacker's current combo chain length this turn (G20b) — `atk.combo`
+   * in `combat.ts`, i.e. the same counter `comboDamage`'s own multiplier reads.
+   * Optional and additive: omitted (or below `COMBO_SPECIAL_CHAIN_THRESHOLD`),
+   * a fighter's super-kind ability triggers exactly as it always has, gated
+   * only on `isSuper`. See `applyAbilities` for how a long-enough chain earns
+   * the super a SECOND way, alongside — never instead of — a full meter.
+   */
+  comboLength?: number;
 }
 
 interface AbilityEffectAmount {
@@ -237,6 +246,21 @@ export function abilitiesFor(fighterName: string): AbilityId[] {
 }
 
 /**
+ * Chain length (G20b) that earns a fighter's super on its own, additively
+ * alongside the existing full-meter trigger — never instead of it (see
+ * `applyAbilities`). Picked to sit one below `COMBO_CAP_STREAK` in
+ * `main.ts` (5, the top of the presentation-escalation curve) and at or past
+ * `CHAIN_HEAVY_REACTION_STREAK` (3, also `main.ts`) — a chain long enough to
+ * earn the special always already reads as the fight's most dramatic hit
+ * tier, never a quiet trigger nobody notices. Still reachable in a real
+ * match: the bundled `microservices.json` transcript measurably reaches a
+ * 5-streak (see the G14 comment in `e2e/fight-feel.test.ts`), so 4 leaves a
+ * two-hit window (streak 4 or 5) rather than needing the single deepest
+ * possible blow to land exactly on the cap.
+ */
+export const COMBO_SPECIAL_CHAIN_THRESHOLD = 4;
+
+/**
  * Pure: given the same context, always returns the same outcome. Aggregates every
  * triggered ability's effects into one outcome combat.ts can apply to state.
  */
@@ -247,15 +271,37 @@ export function applyAbilities(ctx: AbilityContext): AbilityOutcome {
   const outcome = emptyOutcome(ctx.baseDamage);
   outcome.damage = ctx.baseDamage;
 
+  // G20b: a sufficiently long combo chain earns a fighter's super-kind
+  // ability on its own, additively — never on a turn that's already a
+  // meter-full super (that path is untouched below), and never based on
+  // `baseDamage`/`combat.ts`'s resolution, only on the chain length combat.ts
+  // hands in. `comboLength` defaults to 0 so any caller that hasn't opted in
+  // (every existing test in tests/abilities.test.ts included) behaves exactly
+  // as before this loop.
+  const comboEarnsSuper =
+    !ctx.isSuper && ctx.intent.power > 0 && (ctx.comboLength ?? 0) >= COMBO_SPECIAL_CHAIN_THRESHOLD;
+  const superGate = ctx.isSuper || comboEarnsSuper;
+  // A derived context, consulted ONLY for super-kind abilities below — every
+  // super's own `trigger`/`apply` still just reads `ctx.isSuper` (unchanged,
+  // see e.g. `CONSTITUTIONAL_BARRIER`), so this is what lets a combo-earned
+  // turn satisfy them without touching a single existing ability definition.
+  // Passives below read the REAL, unmodified `ctx.isSuper` — a combo-earned
+  // special suppresses passives exactly like a meter-full super does (never
+  // both halves of a kit at once), but it does so via `superGate`, not by
+  // quietly redefining what `isSuper` itself means anywhere else.
+  const superCtx: AbilityContext = superGate === ctx.isSuper ? ctx : { ...ctx, isSuper: superGate };
+
   for (const id of ids) {
     const def = ABILITIES[id];
-    // Passives only fire on a normal turn, supers only fire on a full-meter turn —
-    // never both at once, so effects from the two halves of a fighter's kit never mix.
-    if (def.kind === 'super' && !ctx.isSuper) continue;
-    if (def.kind === 'passive' && ctx.isSuper) continue;
-    if (!def.trigger(ctx)) continue;
+    // Passives only fire on a normal turn, supers only fire on a full-meter OR
+    // combo-earned turn — never both at once, so effects from the two halves
+    // of a fighter's kit never mix.
+    if (def.kind === 'super' && !superGate) continue;
+    if (def.kind === 'passive' && superGate) continue;
+    const activeCtx = def.kind === 'super' ? superCtx : ctx;
+    if (!def.trigger(activeCtx)) continue;
 
-    for (const { effect, amount } of def.apply(ctx)) {
+    for (const { effect, amount } of def.apply(activeCtx)) {
       switch (effect) {
         case 'damage':
           outcome.damage += amount;

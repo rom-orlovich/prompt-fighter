@@ -98,7 +98,15 @@ export function resolve(input: ResolveInput): CombatEvent[] {
     intent,
     attacker,
     isSuper,
-    baseDamage
+    baseDamage,
+    // G20b: hands the attacker's current chain length to `applyAbilities` so
+    // a long-enough combo can additively earn a fighter's super alongside the
+    // existing full-meter trigger — see `COMBO_SPECIAL_CHAIN_THRESHOLD` and
+    // the long comment in `abilities.ts`. Purely informational: nothing below
+    // this call, and no branch above it, changes because of this field —
+    // `isSuper`, `baseDamage` and every damage/resolution step stay exactly
+    // as they were.
+    comboLength: atk.combo
   });
 
   let damage = abilities.damage;

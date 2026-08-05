@@ -44,6 +44,14 @@ export type PoseName =
   /** A reactive sidestep/duck — played on whichever fighter's opponent just
    * broke a combo (see `case 'comboBreak'` in main.ts). */
   | 'dodge'
+  /**
+   * A jump (G20a) — played at the recovery beat after a fighter throws a
+   * `GRAPPLE`-kind move (an `isQuestion` line, "TURNED THE QUESTION"): the
+   * fighter hops clear of its own redirect instead of settling straight back
+   * to idle. See `jumpSide` in main.ts for why this is deferred to the same
+   * post-turn recovery timer `dodge` already uses, not applied inline.
+   */
+  | 'jump'
   | 'ko'
   | 'win';
 
@@ -159,12 +167,21 @@ const POSE_CLIPS: Record<PoseName, readonly string[]> = {
   // a low duck-and-lean out of the way — played on a fighter whose opponent's
   // combo just broke, which used to have no visible reaction at all.
   dodge: ['Slide_Start'],
+  // `Jump_Start` (G20a, vendored from UAL1) clamp-held on its own last frame
+  // (see CLAMP_POSES) — a clean, held knee-up/arms-out mid-air pose. Looked at
+  // side by side against `Jump_Loop`/`Jump_Land` and UAL2's `NinjaJump_*` on
+  // the real rig/camera first: `NinjaJump_Start`'s forward-leaning, arms-back
+  // launch reads too close to `dodge` (`Slide_Start`, a low duck-and-lean)
+  // from this same 3/4 view, and sequencing a 3-part start/loop/land clip
+  // through this rig's single-clip-per-pose machinery would add real
+  // complexity for a look `Jump_Start` alone already has once held.
+  jump: ['Jump_Start'],
   ko: ['Death01'],
   win: ['Dance_Loop']
 };
 
 /** Poses that hold their final frame instead of looping. */
-const CLAMP_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'attack', 'hurt', 'hurtHeavy', 'dodge']);
+const CLAMP_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'attack', 'hurt', 'hurtHeavy', 'dodge', 'jump']);
 
 /**
  * Poses held at a fraction of their clip instead of played through.
@@ -209,6 +226,7 @@ const POSE_BLEND: Record<PoseName, number> = {
   // heavy blow should slam into its reaction with even less blend, not more.
   hurtHeavy: 0.04,
   dodge: 0.1,
+  jump: 0.12,
   ko: 0.12,
   win: 0.3
 };
@@ -290,6 +308,7 @@ const POSE_TIME_SCALE: Record<PoseName, number> = {
   // any hit reaction in the vendored set, so this keeps it from dragging.
   hurtHeavy: 1.2,
   dodge: 1.3,
+  jump: 1,
   ko: 1,
   win: 1.15
 };

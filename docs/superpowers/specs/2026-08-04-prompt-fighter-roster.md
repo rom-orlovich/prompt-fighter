@@ -55,10 +55,29 @@ The 8 abilities, 2 per fighter:
 | `LOCAL 7B` | QUANTIZED GLITCH — +6 damage on a `JAB`, but 4 self-damage every time | FAST INFERENCE — +20 meter, 8 self-damage |
 
 `applyAbilities(ctx)` is pure and deterministic: given the same `AbilityContext` (fighter
-name, move intent, whether the meter is full, base damage) it always returns the same
-`AbilityOutcome`. A fighter with no matching ability for the current turn falls through to
-`emptyOutcome`, which is exactly the legacy pre-abilities behavior — `combat.ts` never has
-to special-case "no ability fired."
+name, move intent, whether the meter is full, base damage, combo length) it always returns
+the same `AbilityOutcome`. A fighter with no matching ability for the current turn falls
+through to `emptyOutcome`, which is exactly the legacy pre-abilities behavior — `combat.ts`
+never has to special-case "no ability fired."
+
+**A combo chain also earns the super (G20b).** A fighter's super used to fire on exactly one
+condition — a full meter (`isSuper`). `applyAbilities` now ORs in a second, additive
+condition: `ctx.comboLength >= COMBO_SPECIAL_CHAIN_THRESHOLD` (4, chosen to sit one below the
+presentation-escalation cap and at-or-past the chain-heavy-reaction threshold in `main.ts`,
+so a combo long enough to earn it always already reads as the fight's most dramatic hit tier
+— see the constant's own doc comment for the full reasoning). `combat.ts` hands in
+`comboLength: atk.combo` — the same counter `comboDamage`'s own multiplier already reads —
+purely as data; `isSuper`, `baseDamage` and every damage/resolution step in `combat.ts` are
+byte-for-byte unchanged. The meter-full path is untouched: a super-kind ability's own
+`trigger`/`apply` still only ever reads `ctx.isSuper`, satisfied via a *derived* context
+(`superGate = ctx.isSuper || comboEarnsSuper`) rather than by redefining what `isSuper` means
+anywhere else, so the two trigger conditions are strictly additive and every existing test in
+`tests/abilities.test.ts` passes unchanged. A combo-earned turn suppresses passives exactly
+like a meter-full turn does (never both halves of a kit at once) and fires the same `ability`
+CombatEvent pipeline a meter-full super's own ability half already uses — `hud.announce` plus
+the named `fx.special` burst/ring — without the meter-full path's own `super` CombatEvent
+(no `legacySuperDamage`, no forced crit, no meter drain to zero): a distinct, visibly
+"special" beat, additive on top of whatever the turn's own hit already does.
 
 ## 4. Character-select screen
 
@@ -183,9 +202,10 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
 - The rig loads through Three.js's `GLTFLoader` as one `.glb` — a single request shared by
   every fighter, no separate `.bin`/texture fetches.
 - Animation runs through `AnimationMixer`. `render/fighter.ts` keeps the exact `PoseName`
-  vocabulary the procedural rig exposed (plus two G17 additions — `hurtHeavy`, `dodge` — the
-  vocabulary is additive, not a rename), so `main.ts`, `combat.ts` and the HUD never learn
-  which rig backend is active. Poses with more than one clip **alternate on each entry**:
+  vocabulary the procedural rig exposed (plus two G17 additions — `hurtHeavy`, `dodge` — and
+  one G20a addition, `jump` — the vocabulary is additive, not a rename), so `main.ts`,
+  `combat.ts` and the HUD never learn which rig backend is active. Poses with more than one
+  clip **alternate on each entry**:
 
   | Pose | Clip(s) | Notes |
   |---|---|---|
@@ -196,6 +216,7 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
   | `hurt` | `Hit_Head` → `Hit_Chest` | alternates — a fighter that always flinches identically reads as a puppet |
   | `hurtHeavy` | `Hit_Knockback` | G17 — reserved for crits, counters and supers, so a blow already staged as dramatic reads as harder than a jab landing |
   | `dodge` | `Slide_Start` frozen at 0.15 | G17 — played on a fighter whose opponent's combo just broke (`comboBreak`, previously unhandled) |
+  | `jump` | `Jump_Start`, clamped (holds its last frame) | G20a — played at the recovery beat after a `GRAPPLE` move ("TURNED THE QUESTION"); see below for why `NinjaJump_*` and the 3-part `Jump_Loop`/`Jump_Land` sequence were looked at and rejected |
   | `ko` | `Death01` | LoopOnce + clamped, holds the last frame |
   | `win` | `Dance_Loop` | |
 
@@ -216,6 +237,19 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
   rejected. 0.15, a compact crouch earlier in the clip with the knee still bent under the
   hip, reads as ducking in the same real-match check. The lesson generalizes: a frozen
   frame has to be judged in the render context it actually ships in, not an isolated one.
+
+  **`jump` (G20a).** Two candidate clip sets exist on the same verified-compatible skeleton:
+  UAL1's `Jump_Start`/`Jump_Loop`/`Jump_Land` and UAL2's `NinjaJump_Start`/
+  `NinjaJump_Idle_Loop`/`NinjaJump_Land`. Both were vendored temporarily and looked at side by
+  side, in the real game camera, against the real rig — not an isolated preview. `Jump_Start`,
+  clamped on its own last frame, won: it reads as a clean, held knee-up/arms-out mid-air pose.
+  `NinjaJump_Start` was rejected because its forward-leaning, arms-swept-back launch reads too
+  close to `dodge` (`Slide_Start`, itself a low duck-and-lean) from this same 3/4 camera —
+  every pose already in the vocabulary has to stay visually distinct from every other, and
+  this pair didn't. Sequencing the full 3-part start/loop/land clip through either source was
+  considered and rejected too: `Jump_Start` alone, held on its last frame, already has the
+  look a sequenced clip would add, for none of the extra state machinery a genuine
+  start→loop→land handoff would need in a rig built around one clip per pose.
 
   `windup` and the old `guard` both previously used the rig's crouch, then both moved to a
   held jab frame: `windup` fires at the start of *every* turn, making it the most-visible
@@ -336,6 +370,10 @@ either source and never needs remapping, only the binary sampler data does. `mer
 asserts the node arrays match and throws rather than silently mis-animating if a future
 source doesn't.
 
+G20a extended `KEEP_CLIPS` (UAL1) with `Jump_Start` the same way — no new merge machinery,
+just one more name in an existing keep-list — after the jump pose section above's side-by-side
+look ruled out UAL2's `NinjaJump_*` and the 3-part sequence.
+
 The result under `public/assets/characters/`:
 
 | Asset | Size | Note |
@@ -343,8 +381,8 @@ The result under `public/assets/characters/`:
 | `Male.glb` | 1.19MB | body, no clips |
 | `Female.glb` | 1.42MB | body, no clips |
 | `Hair_SimpleParted / Beard / Buzzed / Long` | 0.38MB total | one per fighter |
-| `Anims.glb` | 15.7MB → 2.75MB | UAL1 (7.6MB, 10 clips) + UAL2 (8.1MB, 4 clips) trimmed and merged into 14 clips, shared by every body |
-| **Total** | **5.73MB** | budget 6MB |
+| `Anims.glb` | 15.7MB → 2.89MB | UAL1 (10 clips, incl. `Jump_Start` — G20a) + UAL2 (4 clips) trimmed and merged into 15 clips, shared by every body |
+| **Total** | **5.88MB** | budget 6MB (unchanged — `Jump_Start` still fit) |
 
 This keeps the "clone stays small" property of the original procedural design intact even
 though the geometry is no longer procedural.
