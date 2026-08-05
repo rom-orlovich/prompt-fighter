@@ -15,7 +15,7 @@ const ALL = [...BODIES, ...HAIRSTYLES, ANIMS];
 
 const MAX_COMBINED_BYTES = 6 * 1024 * 1024;
 
-/** Must stay in sync with `KEEP_CLIPS` in scripts/vendor-characters.mjs. */
+/** Must stay in sync with `KEEP_CLIPS` + `KEEP_CLIPS_2` in scripts/vendor-characters.mjs. */
 const EXPECTED_CLIPS = [
   'Idle_Loop',
   'Sword_Idle',
@@ -26,7 +26,12 @@ const EXPECTED_CLIPS = [
   'Hit_Chest',
   'Death01',
   'Dance_Loop',
-  'Walk_Loop'
+  'Walk_Loop',
+  // G17, vendored from Universal Animation Library 2 — see KEEP_CLIPS_2.
+  'Melee_Hook',
+  'Hit_Knockback',
+  'Idle_Shield_Loop',
+  'Slide_Start'
 ].sort();
 
 /** Every clip `POSE_CLIPS` in src/render/fighter.ts can ask the mixer for. */
@@ -38,7 +43,12 @@ const POSE_CLIPS = [
   'Hit_Head',
   'Hit_Chest',
   'Death01',
-  'Dance_Loop'
+  'Dance_Loop',
+  // G17
+  'Melee_Hook',
+  'Hit_Knockback',
+  'Idle_Shield_Loop',
+  'Slide_Start'
 ];
 
 function load(asset: string) {

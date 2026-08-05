@@ -89,6 +89,14 @@ test.describe('fight feel', () => {
     const contacts: Contact[] = await page.evaluate(() => (window as any).__pf.contacts);
     expect(contacts.length, 'blows landed').toBeGreaterThan(10);
 
+    // --- G17: the expanded move vocabulary actually gets used -----------------
+    // A clip that's vendored but never triggered in a real match is not a
+    // move, it's dead weight — this is the MEASURED half of that check (the
+    // LOOKED-AT half is the screenshot specs below and the G17 done-marker).
+    const playedClips: string[] = await page.evaluate(() => (window as any).__pf.playedClips());
+    console.log('distinct clips played in a real match:', playedClips.sort().join(', '));
+    expect(playedClips.length, `distinct clips played (${playedClips.join(', ')})`).toBeGreaterThanOrEqual(6);
+
     const atRest = contacts.filter((c) => c.atRest);
     expect(atRest.length, 'blows landed from a neutral start').toBeGreaterThan(0);
 

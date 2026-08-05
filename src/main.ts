@@ -205,6 +205,13 @@ interface DebugBridge {
    * nothing re-introduces a head-occluding sprite later.
    */
   spriteCount(): number;
+  /**
+   * Every vendored animation clip NAME that has actually played on either
+   * fighter this page-load — union of both rigs' `playedClips()` (G17). A
+   * clip that's vendored but never triggered isn't a move, it's dead weight;
+   * see the "distinct clips" assertion in e2e/fight-feel.test.ts.
+   */
+  playedClips(): string[];
 }
 
 declare global {
@@ -261,6 +268,10 @@ window.__pf = {
       if ((object as { isSprite?: boolean }).isSprite) count += 1;
     });
     return count;
+  },
+  playedClips() {
+    if (!rigs) return [];
+    return [...new Set([...rigs.p1.playedClips(), ...rigs.p2.playedClips()])];
   }
 };
 
@@ -285,6 +296,13 @@ let source: MatchSource | null = null;
 let roundJustEnded = false;
 let fighting = false;
 let roundClock = ROUND_SECONDS;
+
+/**
+ * Set by `case 'comboBreak'` below, consumed (and cleared) by the very next
+ * `onTurnEnd`'s recovery beat — see the long comment on `comboBreak` for why
+ * `dodge` is applied there instead of inline.
+ */
+let comboBreakVictim: Speaker | null = null;
 
 /** Hip heights seen while each fighter was upright — the K.O. drop is measured against these. */
 const standingRootY: Record<Speaker, number> = { p1: 0, p2: 0 };
@@ -557,6 +575,16 @@ const handlers: StreamHandlers = {
     engine.setPlayerAction(action);
     rigs[speaker].setCharge(0);
     engine.completeTurn(speaker, fullText);
+    // Captured into a local NOW, not read from inside the timeout below: a
+    // turn's own synchronous event batch (including any `comboBreak` above)
+    // has already fully run by this point in `onTurnEnd`, but the next
+    // turn's `onTurnStart`/`onTurnEnd` can fire before THIS turn's
+    // `RECOVERY_MS` timeout does (turns don't wait on each other's recovery
+    // timer) — reading the shared variable from inside the closure would
+    // risk applying a stale or a too-early victim from whichever turn
+    // happens to run first. A per-call local has no such race.
+    const dodgeSide = comboBreakVictim;
+    comboBreakVictim = null;
 
     setTimeout(() => {
       if (!engine || engine.matchOver || !rigs) return;
@@ -567,7 +595,9 @@ const handlers: StreamHandlers = {
       // until the next round explicitly clears them.
       for (const side of ['p1', 'p2'] as const) {
         if (TERMINAL_POSES.has(rigs[side].currentPose())) continue;
-        rigs[side].setPose('idle');
+        // G17: a fighter whose opponent's combo broke THIS turn ducks/leans
+        // instead of going straight back to idle — see `case 'comboBreak'`.
+        rigs[side].setPose(side === dodgeSide ? 'dodge' : 'idle');
       }
     }, RECOVERY_MS);
   }
@@ -802,7 +832,9 @@ function handleEvent(event: CombatEvent): void {
 
       const point = beginContact('hit', attacker, event.target, event.damage, event.crit, streak);
 
-      rig.setPose(event.damage > 0 ? 'hurt' : 'idle');
+      // A crit gets the heavier reaction (G17) — same rule a counter/super
+      // already gets below, so every blow staged as dramatic reads as one.
+      rig.setPose(event.damage > 0 ? (event.crit ? 'hurtHeavy' : 'hurt') : 'idle');
       rig.flash(1);
       rig.knockback(
         (KNOCKBACK_BASE + event.damage * KNOCKBACK_PER_DAMAGE) * (event.crit ? KNOCKBACK_CRIT : 1)
@@ -861,7 +893,9 @@ function handleEvent(event: CombatEvent): void {
       const scale = comboScale(streak, COMBO_STEP);
       const hitstopScale = comboScale(streak, COMBO_HITSTOP_STEP);
       const point = beginContact('counter', event.by, target, event.damage, true, streak);
-      victim.setPose('hurt');
+      // A counter is always the heavier reaction (G17) — it's already always
+      // treated as a crit for damage/FX purposes above.
+      victim.setPose('hurtHeavy');
       victim.flash(1.4);
       victim.knockback(0.9 + event.damage * KNOCKBACK_PER_DAMAGE);
       stage.shake(0.95 * scale);
@@ -886,6 +920,30 @@ function handleEvent(event: CombatEvent): void {
       break;
     }
 
+    case 'comboBreak': {
+      // G17: previously unhandled — nothing happened on screen when a
+      // fighter's combo broke, even though the engine already fires this
+      // every time an argument fails to continue the thread (3x per bundled
+      // stage, measured; unlike `whiff`, which the analyzer can never
+      // actually produce). The PIVOT action's own hint text already frames
+      // breaking a combo as "evade" (`<i>evade · breaks their combo</i>` in
+      // index.html), so the OPPONENT — not the fighter whose combo broke —
+      // is who gets to play the dodge: reads as them slipping the pattern
+      // and disrupting the rhythm, not the attacker's own animation.
+      //
+      // Recorded here, not applied here: `comboBreak` fires synchronously in
+      // the SAME event batch as this turn's `hit`/`blocked` — both target the
+      // opponent — and `emitAll` (match.ts) has no gap between events, so a
+      // `setPose('dodge')` made right here would be crossfaded over by the
+      // very next event before a single frame ever rendered it (verified:
+      // two real, headed-GPU screenshot passes never once caught it as the
+      // live pose). `onTurnEnd`'s existing post-turn recovery beat — a real
+      // `setTimeout`, not a same-tick call — is where it actually gets
+      // applied, once the turn's own hit reaction has already had its moment.
+      comboBreakVictim = event.by === 'p1' ? 'p2' : 'p1';
+      break;
+    }
+
     case 'meter': {
       hud.setMeter(event.who, event.value);
       break;
@@ -905,7 +963,9 @@ function handleEvent(event: CombatEvent): void {
       const streak = extendStreak(event.by, event.damage);
       const scale = comboScale(streak, COMBO_STEP);
       const point = beginContact('super', event.by, target, 0, true, streak);
-      victim.setPose('hurt');
+      // A super is always the heaviest reaction (G17) — it already always
+      // knocks back the hardest of any event type below.
+      victim.setPose('hurtHeavy');
       victim.flash(1.8);
       victim.knockback(1.4);
       // The named-special FX carry their own themed burst/ring and shake the

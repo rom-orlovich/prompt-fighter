@@ -3,36 +3,46 @@
  * Vendors the fighter bodies, hairstyles and animation clips into
  * `public/assets/characters/`.
  *
- * Three CC0 Quaternius sources, all sharing ONE Unreal-style skeleton, which is
+ * Four CC0 Quaternius sources, all sharing ONE Unreal-style skeleton, which is
  * the whole reason this combination works:
  *
  *   - Universal Base Characters — the bodies. Realistically proportioned
  *     (~7 heads), muscular, and shipped with ZERO animations.
  *   - Universal Animation Library — the clips, including a real boxing
  *     vocabulary (`Punch_Jab`, `Punch_Cross`, `Hit_Head`, `Hit_Chest`).
+ *   - Universal Animation Library 2 (G17) — a second, independently-exported
+ *     clip pack that fills out the vocabulary the first pack doesn't have: a
+ *     third punch (`Melee_Hook`), a heavy hit reaction (`Hit_Knockback`), a
+ *     real guard stance (`Idle_Shield_Loop`) and a dodge (`Slide_Start`).
+ *     Verified byte-for-byte identical node ordering/naming to UAL1's export
+ *     (see `mergeAnimGlbs` in `trim-glb.mjs`), so its clips drive the same
+ *     bodies with no extra retargeting step.
  *   - The base pack's hairstyles, rigged to the head bone.
  *
- * 66 of 67 bone names match between the bodies and the animation library, so the
- * clips drive the bodies directly and the hair rebinds onto the body skeleton by
- * name — no retargeting math, which is the step that usually turns a swap like
- * this into twisted limbs.
+ * 66 of 67 bone names match between the bodies and each animation library, so
+ * the clips drive the bodies directly and the hair rebinds onto the body
+ * skeleton by name — no retargeting math, which is the step that usually turns
+ * a swap like this into twisted limbs.
  *
- * NOTE the animation library must be the **Unreal-Godot** export
- * (`UAL1_Standard.glb`). The Godot-only mirror floating around GitHub uses
- * Blender/Rigify bone names (`DEF-head`, `DEF-f_index.03.L`) and shares exactly
- * ONE bone name with the bodies — its clips silently animate nothing.
+ * NOTE both animation libraries must be the **Unreal-Godot** export
+ * (`UAL1_Standard.glb` / `UAL2_Standard.glb`). The Godot-only mirrors floating
+ * around GitHub use Blender/Rigify bone names (`DEF-head`, `DEF-f_index.03.L`)
+ * and share almost no bone names with the bodies — their clips silently
+ * animate nothing.
  *
- * License: CC0 1.0 for all three packs (no attribution required).
+ * License: CC0 1.0 for all four packs (no attribution required).
  *   https://quaternius.itch.io/universal-base-characters
  *   https://quaternius.itch.io/universal-animation-library
+ *   https://quaternius.itch.io/universal-animation-library-2
  *
- * Both are name-your-own-price downloads behind itch.io's interactive flow, so
+ * All are name-your-own-price downloads behind itch.io's interactive flow, so
  * they are not fetched automatically. Download and unzip them, then point this
- * script at the two extracted folders:
+ * script at the extracted folders:
  *
  *   node scripts/vendor-characters.mjs \
  *     --base "/path/to/Universal Base Characters[Standard]" \
- *     --anims "/path/to/Universal Animation Library[Standard]"
+ *     --anims "/path/to/Universal Animation Library[Standard]" \
+ *     --anims2 "/path/to/Universal Animation Library 2[Standard]"
  *
  * Deterministic: unchanged inputs produce byte-identical output.
  */
@@ -44,7 +54,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { packGltfToGlb, readGlb } from './gltf-to-glb.mjs';
-import { trimGlb } from './trim-glb.mjs';
+import { mergeAnimGlbs } from './trim-glb.mjs';
 import { validateGlbStructure } from './validate-glb.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,13 +67,12 @@ export const BODIES = ['Male', 'Female'];
 export const HAIRSTYLES = ['Hair_SimpleParted', 'Hair_Beard', 'Hair_Buzzed', 'Hair_Long'];
 
 /**
- * The clips the game plays. Keep in sync with `POSE_CLIPS` in
- * `src/render/fighter.ts` and with `tests/vendored-assets.test.ts`.
+ * The clips the game plays, from Universal Animation Library (UAL1). Keep in
+ * sync with `POSE_CLIPS` in `src/render/fighter.ts` and with
+ * `tests/vendored-assets.test.ts`.
  *
  * `Punch_Enter` is deliberately absent — it exists only in the Godot-named
- * export, which cannot drive these bodies. The guard-up stance is produced
- * instead by holding `Punch_Jab` at a fraction of its duration (see
- * `POSE_FREEZE` in fighter.ts).
+ * export, which cannot drive these bodies.
  */
 export const KEEP_CLIPS = [
   'Idle_Loop',
@@ -77,6 +86,22 @@ export const KEEP_CLIPS = [
   'Dance_Loop',
   'Walk_Loop'
 ];
+
+/**
+ * The clips the game plays, from Universal Animation Library 2 (UAL2, G17).
+ * Everything the free tier advertises beyond this was measured and rejected —
+ * see the G17 done-marker for what was looked at and why it didn't ship
+ * (mostly: the pack's "combo" clips are sword combos, and a swordless
+ * fighter playing them reads as flailing at nothing).
+ *
+ *   `Melee_Hook`        — a real third punch, joining `Punch_Jab`/`Punch_Cross`.
+ *   `Hit_Knockback`     — a heavy hit reaction for crits/counters/supers.
+ *   `Idle_Shield_Loop`  — a real guard stance (arms up), replacing the old
+ *                         frozen-mid-jab `guard` pose.
+ *   `Slide_Start`       — a dodge/evade, played on the opponent when a
+ *                         fighter's combo breaks.
+ */
+export const KEEP_CLIPS_2 = ['Melee_Hook', 'Hit_Knockback', 'Idle_Shield_Loop', 'Slide_Start'];
 
 const MAX_COMBINED_BYTES = 6 * 1024 * 1024;
 
@@ -162,14 +187,19 @@ function packBodyGlb(dir, name, outName, body) {
 function main() {
   const baseDir = arg('--base');
   const animsDir = arg('--anims');
-  if (!baseDir || !animsDir) {
-    throw new Error('need --base <Universal Base Characters[Standard]> and --anims <Universal Animation Library[Standard]>');
+  const anims2Dir = arg('--anims2');
+  if (!baseDir || !animsDir || !anims2Dir) {
+    throw new Error(
+      'need --base <Universal Base Characters[Standard]>, --anims <Universal Animation Library[Standard]> ' +
+        'and --anims2 <Universal Animation Library 2[Standard]>'
+    );
   }
 
   const bodySrc = join(baseDir, 'Base Characters', 'Godot - UE');
   const hairSrc = join(baseDir, 'Hairstyles', 'Rigged to Head Bone', 'glTF (Godot -Unreal)');
   const animSrc = join(animsDir, 'Unreal-Godot', 'UAL1_Standard.glb');
-  for (const p of [bodySrc, hairSrc, animSrc]) {
+  const anim2Src = join(anims2Dir, 'Unreal-Godot', 'UAL2_Standard.glb');
+  for (const p of [bodySrc, hairSrc, animSrc, anim2Src]) {
     if (!existsSync(p)) throw new Error(`missing expected pack path: ${p}`);
   }
 
@@ -188,22 +218,31 @@ function main() {
     console.log(`${`${hair}.glb`.padEnd(24)} ${(bytes / 1e6).toFixed(2)}MB`);
   }
 
-  // The animation library is already a GLB; it just carries 33 clips this game
-  // never plays (driving, swimming, pistols, farming).
-  const raw = new Uint8Array(readFileSync(animSrc));
-  const trimmed = trimGlb(raw, KEEP_CLIPS);
+  // Both animation libraries are already GLBs; each carries dozens of clips
+  // this game never plays (driving, swimming, pistols, farming, zombies,
+  // sword combos). `mergeAnimGlbs` trims each to its own KEEP list and
+  // combines them into one clip library the loader treats as a single file
+  // (see its doc comment in trim-glb.mjs for why this is safe: both packs
+  // export the identical node hierarchy).
+  const raw1 = new Uint8Array(readFileSync(animSrc));
+  const raw2 = new Uint8Array(readFileSync(anim2Src));
+  const rawCombinedBytes = raw1.byteLength + raw2.byteLength;
+  const trimmed = mergeAnimGlbs([
+    { glb: raw1, keep: KEEP_CLIPS },
+    { glb: raw2, keep: KEEP_CLIPS_2 }
+  ]);
   const { valid, errors } = validateGlbStructure(trimmed);
   if (!valid) throw new Error(`Anims.glb failed structural validation: ${errors.join('; ')}`);
 
   const clips = (readGlb(trimmed).json.animations ?? []).map((a) => a.name).sort();
-  const expected = [...KEEP_CLIPS].sort();
+  const expected = [...KEEP_CLIPS, ...KEEP_CLIPS_2].sort();
   if (clips.join() !== expected.join()) {
     throw new Error(`Anims.glb kept the wrong clips: ${clips.join(', ')}`);
   }
   writeFileSync(join(OUT_DIR, 'Anims.glb'), trimmed);
   combined += trimmed.byteLength;
   console.log(
-    `${'Anims.glb'.padEnd(24)} ${(raw.byteLength / 1e6).toFixed(2)}MB -> ` +
+    `${'Anims.glb'.padEnd(24)} ${(rawCombinedBytes / 1e6).toFixed(2)}MB -> ` +
       `${(trimmed.byteLength / 1e6).toFixed(2)}MB  ${clips.length} clips`
   );
 

@@ -29,7 +29,23 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { FighterProfile } from '../fighters';
 import { characterFor, characterAssetUrl, ANIMATION_ASSET } from '../roster/characters';
 
-export type PoseName = 'idle' | 'windup' | 'attack' | 'guard' | 'hurt' | 'ko' | 'win';
+export type PoseName =
+  | 'idle'
+  | 'windup'
+  | 'attack'
+  | 'guard'
+  | 'hurt'
+  /**
+   * A heavier hit reaction than `hurt` — crits, counters and supers land here
+   * instead (G17), so a fight-ending blow visibly reads as harder than a jab
+   * landing rather than replaying the exact same flinch at every damage tier.
+   */
+  | 'hurtHeavy'
+  /** A reactive sidestep/duck — played on whichever fighter's opponent just
+   * broke a combo (see `case 'comboBreak'` in main.ts). */
+  | 'dodge'
+  | 'ko'
+  | 'win';
 
 export interface FighterRig {
   group: THREE.Group;
@@ -75,6 +91,13 @@ export interface FighterRig {
   knockbackOffset(): number;
   /** Snap back to the neutral corner, cancelling any lunge or knockback. */
   resetStance(): void;
+  /**
+   * Every vendored clip NAME (not abstract `PoseName`) actually played on this
+   * rig so far — `attack`/`hurt`/etc. each rotate through several clips, so
+   * this is the real measure of how much of the vocabulary a match exercises
+   * (G17; see the "distinct clips" assertion in e2e/fight-feel.test.ts).
+   */
+  playedClips(): ReadonlySet<string>;
 }
 
 /**
@@ -90,23 +113,41 @@ const POSE_CLIPS: Record<PoseName, readonly string[]> = {
   // A combat-ready stance that actually loops, so a fighter waiting out a long
   // turn still breathes instead of standing frozen.
   idle: ['Sword_Idle'],
-  attack: ['Punch_Jab', 'Punch_Cross'],
+  // `Melee_Hook` (G17, vendored from Universal Animation Library 2) is a real
+  // third strike, so `attack` rotates through three distinct punches instead
+  // of two — a fighter that only ever threw the same two blows was the single
+  // biggest gap the move-vocabulary critic loop flagged.
+  attack: ['Punch_Jab', 'Punch_Cross', 'Melee_Hook'],
   // `windup` fires at the start of every turn, so it is on screen more than any
   // other pose. It freezes `Punch_Jab` partway in (see POSE_FREEZE) to hold a
   // real fists-up boxing guard — an earlier pass used the rig's crouch here and
   // it read as the fighter squatting rather than loading up a punch.
   windup: ['Punch_Jab'],
-  // A block is fists up covering the face, so `guard` holds the same jab frame
-  // as `windup`, just a little deeper into the wind. The rig's crouch was tried
-  // here first and read as the fighter squatting rather than covering up.
-  guard: ['Punch_Jab'],
+  // A real guard stance (G17, vendored from UAL2) — arms crossed up covering
+  // the head/chest, looped rather than frozen. This used to hold `Punch_Jab`
+  // a little deeper into its wind than `windup` (see the old POSE_FREEZE.guard
+  // entry, since removed): serviceable, but it was visibly the SAME pose as
+  // the windup, just a few frames later, so a blocked exchange and a loading
+  // punch read as identical stances. `Idle_Shield_Loop` is a stance actually
+  // authored to be held, not a punch frozen mid-swing.
+  guard: ['Idle_Shield_Loop'],
   hurt: ['Hit_Head', 'Hit_Chest'],
+  // See the `hurtHeavy` PoseName doc comment. `Hit_Knockback` (G17, UAL2) is
+  // the only clip in either vendored library that reads as a fighter actually
+  // getting rocked rather than just flinching — hands thrown up, knocked off
+  // balance, catching itself — so it is reserved for blows already staged as
+  // dramatic (a crit, a counter, a super), never a plain jab.
+  hurtHeavy: ['Hit_Knockback'],
+  // `Slide_Start` (G17, UAL2) frozen mid-slide (see POSE_FREEZE.dodge) reads as
+  // a low duck-and-lean out of the way — played on a fighter whose opponent's
+  // combo just broke, which used to have no visible reaction at all.
+  dodge: ['Slide_Start'],
   ko: ['Death01'],
   win: ['Dance_Loop']
 };
 
 /** Poses that hold their final frame instead of looping. */
-const CLAMP_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'attack', 'hurt']);
+const CLAMP_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'attack', 'hurt', 'hurtHeavy', 'dodge']);
 
 /**
  * Poses held at a fraction of their clip instead of played through.
@@ -116,10 +157,24 @@ const CLAMP_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'attack', 'h
  * through a textbook guard — fists up at face level — about a fifth of the way
  * in, so `windup` plays to there and pauses. Picked by rendering the clip at
  * several fractions and looking at them, not by guessing.
+ *
+ * `dodge` uses the same technique on `Slide_Start` (G17), but landed somewhere
+ * different than the isolated-clip look suggested: a mid-clip freeze (~0.4-0.6,
+ * a low lean with one arm braced toward the ground) reads fine on an isolated
+ * probe rig against a grid floor, but in the ACTUAL match — this game's camera
+ * angle, the fighter's own facing rotation, the ring floor — the same frame
+ * reads as the fighter having fallen down, not ducked (confirmed on a real
+ * GPU with the game's own camera: two independent live-match screenshot
+ * passes at 0.58 both showed what unambiguously looks like a knockdown, not
+ * an evade — rejected after looking at it, not shipped). 0.15 — much earlier
+ * in the clip, a compact low crouch with the knee still bent under the hip
+ * rather than the leg extended along the ground — reads as ducking when
+ * checked the same way. Always judge a frozen frame in the real render
+ * context it will actually appear in, not just an isolated preview.
  */
 const POSE_FREEZE: Partial<Record<PoseName, number>> = {
   windup: 0.18,
-  guard: 0.24
+  dodge: 0.15
 };
 
 /**
@@ -133,6 +188,10 @@ const POSE_BLEND: Record<PoseName, number> = {
   attack: 0.06,
   guard: 0.12,
   hurt: 0.05,
+  // Snappier than `hurt` (0.05s) would already cover it, but explicit: a
+  // heavy blow should slam into its reaction with even less blend, not more.
+  hurtHeavy: 0.04,
+  dodge: 0.1,
   ko: 0.12,
   win: 0.3
 };
@@ -150,8 +209,16 @@ const POSE_TIME_SCALE: Record<PoseName, number> = {
   idle: 0.8,
   windup: 1.4,
   attack: 1.15,
-  guard: 0.7,
+  // Was 0.7 back when `guard` was a punch frozen mid-wind (slowed to make the
+  // freeze look deliberate rather than paused mid-swing). `Idle_Shield_Loop`
+  // is authored to be held, so it plays at a natural, watchful pace instead.
+  guard: 0.9,
   hurt: 1.1,
+  // Faster than `hurt`: a heavy blow should snap into its reaction, not ease
+  // into it — `Hit_Knockback`'s own ~0.83s duration is already the longest of
+  // any hit reaction in the vendored set, so this keeps it from dragging.
+  hurtHeavy: 1.2,
+  dodge: 1.3,
   ko: 1,
   win: 1.15
 };
@@ -436,6 +503,8 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let frozenTime = 0;
   /** Rotates through each pose's clip list so repeats alternate instead of repeating. */
   const variantCursor = new Map<PoseName, number>();
+  /** See `playedClips()` on `FighterRig`. */
+  const playedClipNames = new Set<string>();
 
   function clipFor(pose: PoseName): string | null {
     const options = POSE_CLIPS[pose];
@@ -453,6 +522,7 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     if (!clipName) return;
     const nextAction = actions.get(clipName);
     if (!nextAction) return; // this rig doesn't have the clip — keep whatever is playing
+    playedClipNames.add(clipName);
     const freeze = POSE_FREEZE[pose];
     const clamp = CLAMP_POSES.has(pose);
     nextAction.reset();
@@ -682,6 +752,10 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
     worldPosition() {
       return group.getWorldPosition(new THREE.Vector3());
+    },
+
+    playedClips() {
+      return playedClipNames;
     },
 
     measuredBounds() {

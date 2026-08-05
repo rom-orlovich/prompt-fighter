@@ -94,32 +94,34 @@ licensing question the original design was protecting against.
 
 ### Source
 
-Three **CC0-licensed** Quaternius packs (public domain, no attribution required), all
+Four **CC0-licensed** Quaternius packs (public domain, no attribution required), all
 sharing ONE Unreal-style skeleton — which is the entire reason the combination works:
 
 | Pack | Provides | Note |
 |---|---|---|
 | [Universal Base Characters](https://quaternius.itch.io/universal-base-characters) | the bodies | realistically proportioned (~7 heads), muscular, **zero animations** |
 | [Universal Animation Library](https://quaternius.itch.io/universal-animation-library) | the clips | includes a real boxing vocabulary |
+| [Universal Animation Library 2](https://quaternius.itch.io/universal-animation-library-2) (G17) | more clips | fills out the vocabulary UAL1 doesn't have — see the pose table above |
 | Base pack's hairstyles | per-fighter heads | rigged to the same skeleton's head bone |
 
-66 of 67 bone names match between the bodies and the animation library, so the clips drive
+66 of 67 bone names match between the bodies and each animation library, so the clips drive
 the bodies directly and the hair rebinds onto the body skeleton by name. No retargeting
 math — which is the step that usually turns a swap like this into twisted limbs.
 
-> **The animation library must be the `Unreal-Godot` export (`UAL1_Standard.glb`).** The
-> Godot-only glTF mirror circulating on GitHub uses Blender/Rigify bone names (`DEF-head`,
-> `DEF-f_index.03.L`) and shares exactly **one** bone name with the bodies — its clips bind
-> to nothing and silently animate nothing at all. `tests/vendored-assets.test.ts` asserts a
-> >90% bone-name overlap specifically to stop that export being re-vendored.
+> **Both animation libraries must be the `Unreal-Godot` export (`UAL1_Standard.glb` /
+> `UAL2_Standard.glb`).** The Godot-only glTF mirrors circulating on GitHub use
+> Blender/Rigify bone names (`DEF-head`, `DEF-f_index.03.L`) and share almost no bone names
+> with the bodies — their clips bind to nothing and silently animate nothing at all.
+> `tests/vendored-assets.test.ts` asserts a >90% bone-name overlap specifically to stop
+> either wrong export being re-vendored.
 
 CC0 is the same license class the 2026-08-03 spec's "asset policy is scoped, not
 asset-free" note already anticipated: no proprietary assets, no attribution-required
 assets, nothing that reopens a licensing question for a public MIT-licensed repo.
 
-Both packs are name-your-own-price downloads behind itch.io's interactive flow, so
-`scripts/vendor-characters.mjs` does not fetch them automatically — it takes `--base` and
-`--anims` paths to the two extracted folders.
+All four packs are name-your-own-price downloads behind itch.io's interactive flow, so
+`scripts/vendor-characters.mjs` does not fetch them automatically — it takes `--base`,
+`--anims` and `--anims2` paths to the three extracted folders.
 
 #### How the roster got here
 
@@ -181,16 +183,19 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
 - The rig loads through Three.js's `GLTFLoader` as one `.glb` — a single request shared by
   every fighter, no separate `.bin`/texture fetches.
 - Animation runs through `AnimationMixer`. `render/fighter.ts` keeps the exact `PoseName`
-  vocabulary the procedural rig exposed, so `main.ts`, `combat.ts` and the HUD never learn
-  which rig backend is active. Poses with two clips **alternate on each entry**:
+  vocabulary the procedural rig exposed (plus two G17 additions — `hurtHeavy`, `dodge` — the
+  vocabulary is additive, not a rename), so `main.ts`, `combat.ts` and the HUD never learn
+  which rig backend is active. Poses with more than one clip **alternate on each entry**:
 
   | Pose | Clip(s) | Notes |
   |---|---|---|
   | `idle` | `Sword_Idle` | a combat-ready stance that **loops**, so a fighter waiting out a long turn still breathes |
   | `windup` | `Punch_Jab` frozen at 0.18 | held partway in — a textbook fists-up guard |
-  | `attack` | `Punch_Jab` → `Punch_Cross` | alternates, so a long exchange isn't one frame replayed |
-  | `guard` | `Punch_Jab` frozen at 0.24 | a block is fists up covering the face, so it holds the same jab a little deeper |
+  | `attack` | `Punch_Jab` → `Punch_Cross` → `Melee_Hook` | rotates through three, so a long exchange isn't one or two frames replayed (G17 added the hook) |
+  | `guard` | `Idle_Shield_Loop` | a real held guard stance (G17) — see below for what it replaced |
   | `hurt` | `Hit_Head` → `Hit_Chest` | alternates — a fighter that always flinches identically reads as a puppet |
+  | `hurtHeavy` | `Hit_Knockback` | G17 — reserved for crits, counters and supers, so a blow already staged as dramatic reads as harder than a jab landing |
+  | `dodge` | `Slide_Start` frozen at 0.15 | G17 — played on a fighter whose opponent's combo just broke (`comboBreak`, previously unhandled) |
   | `ko` | `Death01` | LoopOnce + clamped, holds the last frame |
   | `win` | `Dance_Loop` | |
 
@@ -200,15 +205,26 @@ the waist in the recorded demo — which is why `tests/characters.test.ts` asser
 
   **On frozen poses.** The Unreal-named library — the only export whose bone names match
   these bodies — has no dedicated fighting-stance clip. `Punch_Jab` passes through a
-  textbook guard about a fifth of the way in, so `windup` and `guard` seek to a fraction of
-  it and pause (`POSE_FREEZE`), pinned every tick while the mixer keeps running so the
-  crossfade into them still completes. The fractions were chosen by rendering the clip at
-  several points and looking at them.
+  textbook guard about a fifth of the way in, so `windup` seeks to a fraction of it and
+  pauses (`POSE_FREEZE`), pinned every tick while the mixer keeps running so the crossfade
+  into it still completes. The fraction was chosen by rendering the clip at several points
+  and looking at them. `dodge` uses the same technique on `Slide_Start` (G17), but the
+  fraction that looked right on an isolated preview rig (~0.4-0.6, a low lean with one arm
+  braced toward the ground) turned out wrong in the actual game: on a real GPU, in the
+  game's own camera and with the fighter's own facing rotation, that frame reads as having
+  fallen down, not ducked — caught on two independent live-match screenshot passes and
+  rejected. 0.15, a compact crouch earlier in the clip with the knee still bent under the
+  hip, reads as ducking in the same real-match check. The lesson generalizes: a frozen
+  frame has to be judged in the render context it actually ships in, not an isolated one.
 
-  Both poses previously used the rig's crouch. `windup` fires at the start of *every* turn,
-  making it the most-visible pose in the match, and it read as the fighter squatting rather
-  than loading up; `guard` read as ducking rather than blocking. Hence both moved to the
-  held jab.
+  `windup` and the old `guard` both previously used the rig's crouch, then both moved to a
+  held jab frame: `windup` fires at the start of *every* turn, making it the most-visible
+  pose in the match, and the crouch read as the fighter squatting rather than loading up;
+  the frozen-jab `guard` read as ducking rather than blocking. **G17 replaced the frozen jab
+  with `Idle_Shield_Loop`**, a clip from Universal Animation Library 2 actually authored as a
+  held stance (arms crossed up, covering the head/chest) rather than a punch paused mid-swing
+  — the frozen jab was serviceable but visibly the *same* pose as `windup`, just a few frames
+  further into the same clip, so a blocked exchange and a loading punch read as identical.
 - Brand color is applied via **material tinting**, not geometry or texture swap: the stock
   materials are cloned per fighter and recolored to the brand hue with an emissive rim, the
   same way the procedural rig's `color`/`accent`/`trim` fields worked. One shared mesh
@@ -305,17 +321,30 @@ size-only check passes on a corrupt model.
 
 `scripts/vendor-characters.mjs` drives the whole pipeline (download → pack → trim →
 validate → write), refuses to emit a rig that fails validation or keeps the wrong clips,
-and fails outright if the payload would exceed the 5MB budget.
+and fails outright if the payload would exceed budget.
+
+**Two animation sources merged into one library (G17).** Universal Animation Library
+(UAL1) covers the original 10-clip set; expanding the move vocabulary needed clips UAL1's
+free tier doesn't have, from a *second*, independently-exported pack — Universal Animation
+Library 2 (UAL2). `scripts/trim-glb.mjs`'s `mergeAnimGlbs([{glb, keep}, ...])` trims each
+source to its own keep-list (same accessor/bufferView compaction `trimGlb` already did for
+one source) and concatenates the results into a single `Anims.glb`, taking node/mesh/skin
+geometry from the first source only. This only works because it was *verified*, not
+assumed, that UAL1 and UAL2's `Unreal-Godot` exports emit the identical 67-node skeleton in
+the same order — so an animation channel's `target.node` index means the same bone in
+either source and never needs remapping, only the binary sampler data does. `mergeAnimGlbs`
+asserts the node arrays match and throws rather than silently mis-animating if a future
+source doesn't.
 
 The result under `public/assets/characters/`:
 
 | Asset | Size | Note |
 |---|---|---|
-| `Male.glb` | 0.74MB | body, no clips |
-| `Female.glb` | 1.01MB | body, no clips |
+| `Male.glb` | 1.19MB | body, no clips |
+| `Female.glb` | 1.42MB | body, no clips |
 | `Hair_SimpleParted / Beard / Buzzed / Long` | 0.38MB total | one per fighter |
-| `Anims.glb` | 7.62MB → 2.20MB | 43 clips trimmed to 10, shared by every body |
-| **Total** | **4.33MB** | budget 6MB |
+| `Anims.glb` | 15.7MB → 2.75MB | UAL1 (7.6MB, 10 clips) + UAL2 (8.1MB, 4 clips) trimmed and merged into 14 clips, shared by every body |
+| **Total** | **5.73MB** | budget 6MB |
 
 This keeps the "clone stays small" property of the original procedural design intact even
 though the geometry is no longer procedural.
