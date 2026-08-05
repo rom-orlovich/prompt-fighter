@@ -73,6 +73,25 @@ export interface FighterRig {
   setCharge(value: number): void;
   flash(intensity: number): void;
   /**
+   * How dangerous this fighter should currently read (G21) — 0 at rest, 1 at
+   * full super meter or deep in a combo streak (callers pass
+   * `Math.max(meterFraction, streakFraction)`; see `updateAggression` in
+   * `main.ts`). Distinct from `setCharge` (a per-turn windup value that
+   * resets every attack) and `flash` (a one-frame hit reaction): this is the
+   * standing "coiled power" read — it drives the silhouette rim glow, the
+   * ground glow underfoot and a small extra forward lean, and it eases
+   * in/out over `AGGRESSION_EASE_S` rather than snapping, so meter/combo
+   * swings read as building energy, not a light switch.
+   */
+  setAggression(value: number): void;
+  /**
+   * The current eased aggression value (see `setAggression`) — exposed so
+   * `window.__pf` (see `main.ts`) can prove the reactive glow actually MOVES
+   * between a neutral moment and a high-meter/combo moment in a real match,
+   * not just that it was requested (G21; see e2e/fight-feel.test.ts).
+   */
+  aggression(): number;
+  /**
    * `dt` is hit-stopped simulation time and drives the animation mixer;
    * `real` (defaulting to `dt`) drives the positional lunge/knockback so a
    * fighter still gets shoved during the freeze frame of an impact.
@@ -368,6 +387,104 @@ const BASE_EMISSIVE_INTENSITY = 0.3;
 /** Hair reads as hair, not as brand paint — it stays dark on every fighter. */
 const HAIR_COLOR = 0x23232b;
 
+// --- G21: aggressive posture and reactive "coiled power" ------------------
+//
+// The critic's three measured problems: a neutral, square stance; a flat
+// constant emissive glow that never reads as menace; and lighting that never
+// changes with fight state. This section is `setAggression`'s whole
+// implementation — a forward lean, a silhouette-edge rim glow, and a ground
+// glow underfoot, all scaled by one eased 0-1 value fed from meter/combo
+// state in `main.ts`.
+
+/**
+ * Static forward lean (radians), applied to the whole rig about its own feet
+ * (`group.rotation.z` — see `createFighter`) so a fighter looms toward its
+ * opponent instead of standing square. Rotating `group` rather than `model`
+ * pivots at the character's own base, not through the yaw already applied to
+ * `model.rotation.y`, so the lean reads as "forward" regardless of the 3/4
+ * facing bias. Sign is `side`-dependent: side -1 (p1, left, facing +X) leans
+ * toward +X; side 1 (p2, right, facing -X) leans toward -X — both toward the
+ * opponent across the origin. ~3.4°: enough to read as weight-forward intent
+ * without the rig visibly toppling (see the `windup`/`attack` poses' own
+ * animated lean, which this sits underneath and does not fight).
+ */
+const POSTURE_LEAN_RAD = 0.06;
+/** Extra lean layered on top of `POSTURE_LEAN_RAD` at full aggression (G21) —
+ * a fighter loads forward further as it gets more dangerous. Combined max
+ * (~5.4°) stays well inside "a few degrees reads as menace, a lot reads as
+ * broken" per the operator's own framing of this loop. */
+const POSTURE_LEAN_AGGRO_RAD = 0.035;
+
+/** Seconds `aggression` takes to ease toward a new target — long enough that
+ * a single meter tick or combo beat doesn't snap the glow like a light
+ * switch, short enough that it visibly tracks the fight within a couple of
+ * exchanges. */
+const AGGRESSION_EASE_S = 0.35;
+
+/**
+ * Fresnel rim-glow intensity at aggression 0 and 1 (G21). Nonzero at rest —
+ * an idle fighter still has an edge, just a faint one — climbing to a hot
+ * silhouette outline at full meter/combo. This is added to `gl_FragColor` at
+ * grazing viewing angles only (see `attachRimShader`), which is what keeps it
+ * from washing out the normal/roughness-lit surface G15 restored: the
+ * face-on musculature is untouched, only the edge picks up extra light.
+ */
+const RIM_INTENSITY_BASE = 0.12;
+const RIM_INTENSITY_AGGRO = 1.35;
+/** Fresnel falloff exponent — higher stays tighter to the silhouette edge. */
+const RIM_FRESNEL_POWER = 2.2;
+
+/** Ground glow radius/opacity underfoot (G21) — a faint scorch at rest,
+ * brightening with aggression so a full-meter or deep-combo fighter visibly
+ * scorches the floor it stands on. */
+const GROUND_GLOW_RADIUS = 0.95;
+const GROUND_GLOW_OPACITY_BASE = 0.08;
+const GROUND_GLOW_OPACITY_AGGRO = 0.42;
+
+/**
+ * Injects a fresnel-style rim term into a cloned `MeshStandardMaterial`'s
+ * compiled shader via `onBeforeCompile` — three.js has no built-in
+ * rim/fresnel term, and a full outline-shell mesh (a scaled, inverted-normal
+ * duplicate) was rejected as too expensive to duplicate across two live rigs
+ * plus four select-screen preview rigs (six skinned meshes total) for what a
+ * shader tweak on the material that's already there gets for free.
+ *
+ * The intensity is read from a uniform (`uRimIntensity`) held in
+ * `material.userData.rim` so `update()` can push a new value every frame
+ * without recompiling the shader — mutating the uniform object already bound
+ * into the compiled program, the standard three.js pattern for an animated
+ * `onBeforeCompile` uniform.
+ */
+function attachRimShader(material: THREE.MeshStandardMaterial, color: number): void {
+  const uniforms = { uRimIntensity: { value: 0 }, uRimColor: { value: new THREE.Color(color) } };
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vRimNormal;\nvarying vec3 vRimViewDir;')
+      .replace(
+        '#include <defaultnormal_vertex>',
+        '#include <defaultnormal_vertex>\n\tvRimNormal = normalize( transformedNormal );'
+      )
+      .replace(
+        '#include <project_vertex>',
+        '#include <project_vertex>\n\tvRimViewDir = normalize( -mvPosition.xyz );'
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nuniform float uRimIntensity;\nuniform vec3 uRimColor;\nvarying vec3 vRimNormal;\nvarying vec3 vRimViewDir;'
+      )
+      .replace(
+        '#include <dithering_fragment>',
+        `float rimFresnel = pow( 1.0 - max( dot( normalize( vRimNormal ), normalize( vRimViewDir ) ), 0.0 ), ${RIM_FRESNEL_POWER.toFixed(
+          1
+        )} );\n\tgl_FragColor.rgb += uRimColor * rimFresnel * uRimIntensity;\n\t#include <dithering_fragment>`
+      );
+  };
+  material.userData.rim = uniforms;
+  material.needsUpdate = true;
+}
+
 /** Finds the rig's head joint — the vendored bodies name it exactly `Head`. */
 function findHeadBone(root: THREE.Object3D): THREE.Object3D | null {
   let exact: THREE.Object3D | null = null;
@@ -489,6 +606,13 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
     character.modelScale,
     character.modelScale * character.bulk
   );
+  // G21: resting forward lean toward the opponent — see `POSTURE_LEAN_RAD`'s
+  // doc comment for why this rotates `group` (pivoting at the rig's own
+  // feet) rather than `model` (already carrying the facing yaw). `update()`
+  // recomputes this every frame once `aggression` layers its own extra lean
+  // on top; this is just the resting value so the rig already looks loaded
+  // before its first `update()` tick.
+  group.rotation.z = side * POSTURE_LEAN_RAD;
 
   // Holds the loaded glTF scene once it arrives; rotated so the model (authored
   // facing +Z) faces across the arena toward the opponent.
@@ -539,6 +663,10 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
    * modest rotation still carries the hand through a wide arc. */
   let upperArmBones: THREE.Object3D[] = [];
   const tintedMaterials: THREE.MeshStandardMaterial[] = [];
+  /** G21: brand-tinted materials wearing the fresnel rim shader — same set as
+   * `tintedMaterials`, kept separate so a future emissive-only material
+   * doesn't silently pick up a rim uniform it was never given. */
+  const rimMaterials: THREE.MeshStandardMaterial[] = [];
 
   // --- footwork -----------------------------------------------------------
   //
@@ -550,6 +678,15 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let lungeScale = 0;
   let knockOffset = 0;
   let knockVelocity = 0;
+
+  // --- aggression (G21) -----------------------------------------------------
+  //
+  // Requested via `setAggression`, eased toward every `update()` tick — see
+  // `AGGRESSION_EASE_S`. Drives the extra lean, the rim glow and the ground
+  // glow together so all three read as one "coiled power" signal rather than
+  // three independently-tuned effects.
+  let aggressionTarget = 0;
+  let aggressionValue = 0;
 
   // --- punch trail --------------------------------------------------------
   //
@@ -573,6 +710,27 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
   let trailStrength = 0;
   let trailPrimed = false;
+
+  // --- ground glow (G21) ---------------------------------------------------
+  //
+  // A faint scorch underfoot at rest, brightening with aggression. Additive
+  // and depth-write-off so it reads as light spilling onto the floor rather
+  // than a painted decal. A child of `group`, so it inherits the resting
+  // lean along with everything else — at ~3-5° that reads as negligible on a
+  // soft additive glow, not worth a second unrotated parent to avoid.
+  const groundGlow = new THREE.Mesh(
+    new THREE.CircleGeometry(GROUND_GLOW_RADIUS, 24),
+    new THREE.MeshBasicMaterial({
+      color: profile.accent,
+      transparent: true,
+      opacity: GROUND_GLOW_OPACITY_BASE,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    })
+  );
+  groundGlow.rotation.x = -Math.PI / 2;
+  groundGlow.position.y = 0.015;
+  group.add(groundGlow);
 
   // --- victory flourish -----------------------------------------------------
   //
@@ -671,6 +829,11 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
         (clone as THREE.MeshStandardMaterial).emissive.setHex(color);
         (clone as THREE.MeshStandardMaterial).emissiveIntensity = BASE_EMISSIVE_INTENSITY;
         tintedMaterials.push(clone as THREE.MeshStandardMaterial);
+        // G21: the silhouette-edge rim glow rides on the same brand-tinted
+        // materials the base emissive already uses — hair stays untouched
+        // (dark, not brand-lit), consistent with `HAIR_COLOR` above.
+        attachRimShader(clone as THREE.MeshStandardMaterial, profile.accent);
+        rimMaterials.push(clone as THREE.MeshStandardMaterial);
       }
       return clone;
     });
@@ -806,6 +969,14 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
 
     flash(intensity) {
       flashAmount = intensity;
+    },
+
+    setAggression(value) {
+      aggressionTarget = Math.max(0, Math.min(1, value));
+    },
+
+    aggression() {
+      return aggressionValue;
     },
 
     headPosition() {
@@ -1014,6 +1185,23 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       } else if (trail.visible) {
         trail.visible = false;
         trailPrimed = false;
+      }
+
+      // G21: ease aggression toward its latest requested target (real time,
+      // like the victory flourish — this should keep building/decaying even
+      // through a hit-stop freeze), then drive the lean/rim/ground-glow off
+      // the eased value so all three move together as one signal.
+      {
+        const ease = 1 - Math.pow(0.001, realDt / AGGRESSION_EASE_S);
+        aggressionValue += (aggressionTarget - aggressionValue) * ease;
+        group.rotation.z = side * (POSTURE_LEAN_RAD + POSTURE_LEAN_AGGRO_RAD * aggressionValue);
+        const rim = RIM_INTENSITY_BASE + RIM_INTENSITY_AGGRO * aggressionValue;
+        for (const material of rimMaterials) {
+          const uniforms = material.userData.rim as { uRimIntensity: { value: number } } | undefined;
+          if (uniforms) uniforms.uRimIntensity.value = rim;
+        }
+        (groundGlow.material as THREE.MeshBasicMaterial).opacity =
+          GROUND_GLOW_OPACITY_BASE + GROUND_GLOW_OPACITY_AGGRO * aggressionValue;
       }
 
       // Time-based, like the camera shake — a per-frame multiplier made the

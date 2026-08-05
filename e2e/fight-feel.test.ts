@@ -818,4 +818,79 @@ test.describe('fight feel', () => {
 
     expect(errors).toEqual([]);
   });
+
+  // --- G21: the "coiled power" read must actually react, not sit flat ------
+  //
+  // The critic's second measured problem: "energy" was a flat constant,
+  // modulated only by per-turn charge/flash — nothing read the fight's own
+  // meter/combo state back into the rig. `FighterRig.setAggression` (see
+  // `fighter.ts`) is what now does that — it drives the silhouette rim glow,
+  // the ground glow and an extra forward lean, and its eased 0-1 value is
+  // read straight back here off `window.__pf.rigs[side].aggression`. This is
+  // the MEASURED half of the check (the LOOKED-AT half is the screenshots
+  // captured by hand against a real GPU — see the rollout's done-marker):
+  // proof the number itself moves across a real, undriven match rather than
+  // being requested once and never changing.
+  test('a fighter reads more dangerous as its meter/combo build — measured aggression actually changes', async ({
+    page
+  }) => {
+    test.setTimeout(180000);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+
+    await startMatch(page, FIGHT, 0);
+
+    const samples: { t: number; p1: number; p2: number }[] = [];
+    const deadline = Date.now() + 120000;
+    while (Date.now() < deadline) {
+      const rigs = await page.evaluate(() => (window as any).__pf.rigs);
+      samples.push({ t: Date.now(), p1: rigs.p1.aggression, p2: rigs.p2.aggression });
+      if (await page.evaluate(() => (window as any).__pf.matchEnded)) break;
+      await page.waitForTimeout(120);
+    }
+    // A little past matchEnd too: a super or long streak just before the K.O.
+    // should still be visibly decaying, not frozen at whatever it last hit.
+    await page.waitForTimeout(1000);
+    const rigsAfter = await page.evaluate(() => (window as any).__pf.rigs);
+    samples.push({ t: Date.now(), p1: rigsAfter.p1.aggression, p2: rigsAfter.p2.aggression });
+
+    expect(samples.length, 'enough samples across a real match').toBeGreaterThan(10);
+
+    const p1Values = samples.map((s) => s.p1);
+    const p2Values = samples.map((s) => s.p2);
+    console.log(
+      'aggression range — p1:',
+      Math.min(...p1Values).toFixed(3),
+      '-',
+      Math.max(...p1Values).toFixed(3),
+      '| p2:',
+      Math.min(...p2Values).toFixed(3),
+      '-',
+      Math.max(...p2Values).toFixed(3)
+    );
+
+    // (1) It is not a flat constant on EITHER side across the match.
+    for (const [side, values] of [
+      ['p1', p1Values],
+      ['p2', p2Values]
+    ] as const) {
+      const range = Math.max(...values) - Math.min(...values);
+      expect(range, `${side} aggression range across the match (flat = never reacts)`).toBeGreaterThan(0.15);
+    }
+
+    // (2) It opens near neutral — meter and streak both start at 0, so the
+    // very first sample (taken right after the match starts) must read low,
+    // not already hot. Pins the "0 at rest" half of the eased range.
+    expect(Math.min(samples[0]!.p1, samples[0]!.p2), 'opens near neutral').toBeLessThan(0.25);
+
+    // (3) At least one side genuinely builds up — a fighter deep in a combo
+    // or sitting on a full meter must read meaningfully hotter than the
+    // match's opening moment.
+    expect(
+      Math.max(Math.max(...p1Values), Math.max(...p2Values)),
+      'at least one side visibly builds toward full aggression'
+    ).toBeGreaterThan(0.5);
+
+    expect(errors).toEqual([]);
+  });
 });

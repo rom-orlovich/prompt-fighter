@@ -10,6 +10,7 @@ import './style.css';
 import type { Vector3 } from 'three';
 import { FightEngine } from './engine/match';
 import type { CombatEvent, PlayerAction, Speaker } from './engine/types';
+import { MAX_METER } from './engine/types';
 import { ROSTER, profileFor } from './fighters';
 import type { FighterId } from './engine/selection';
 import { selectMatchup } from './engine/selection';
@@ -101,6 +102,14 @@ interface RigSnapshot {
   standingRootY: number;
   /** Signed knockback displacement, isolated from the step-in lunge. */
   knockback: number;
+  /**
+   * The rig's current eased "coiled power" read (G21) — 0 at rest, 1 at full
+   * super meter or deep in a combo streak, see `updateAggression` below and
+   * `setAggression` on `FighterRig`. Exposed so a test can prove the
+   * silhouette rim/ground glow actually MOVES between a neutral moment and a
+   * high-meter/combo moment in a real match, not just that it was requested.
+   */
+  aggression: number;
 }
 
 /**
@@ -401,7 +410,8 @@ function snapshot(side: Speaker): RigSnapshot {
     chest: rig.chestPosition().toArray() as Vec3,
     root: rig.rootPosition().toArray() as Vec3,
     standingRootY: standingRootY[side],
-    knockback: rig.knockbackOffset()
+    knockback: rig.knockbackOffset(),
+    aggression: rig.aggression()
   };
 }
 
@@ -818,6 +828,7 @@ function extendStreak(side: Speaker, damage: number): number {
     hud.combo(side, streakCount);
     window.__pf.presentationCombos.push({ side, count: streakCount });
   }
+  updateAggression(side);
   return streakCount;
 }
 
@@ -825,6 +836,30 @@ function extendStreak(side: Speaker, damage: number): number {
 function resetStreak(): void {
   streakSide = null;
   streakCount = 0;
+  updateAggression('p1');
+  updateAggression('p2');
+}
+
+/**
+ * Last `meter` event value seen per side, 0-1 — the other half (besides combo
+ * streak) of the "how dangerous does this fighter currently read" signal fed
+ * to `FighterRig.setAggression` (G21).
+ */
+const meterFraction: Record<Speaker, number> = { p1: 0, p2: 0 };
+
+/**
+ * Recomputes and pushes `side`'s aggression to its rig — the higher of its
+ * super-meter fill and its live combo-streak fraction (a fighter deep in a
+ * combo reads as dangerous even mid-round with an empty meter; a full meter
+ * reads as dangerous even between combos — either alone should light the rig
+ * up, not just their average). Called on every `meter` event and every combo
+ * streak change, so the rig's eased value (see `AGGRESSION_EASE_S` in
+ * `fighter.ts`) always chases the true current state of both.
+ */
+function updateAggression(side: Speaker): void {
+  if (!rigs) return;
+  const streakFraction = streakSide === side ? Math.min(1, streakCount / COMBO_CAP_STREAK) : 0;
+  rigs[side].setAggression(Math.max(meterFraction[side], streakFraction));
 }
 
 /**
@@ -1092,6 +1127,8 @@ function handleEvent(event: CombatEvent): void {
 
     case 'meter': {
       hud.setMeter(event.who, event.value);
+      meterFraction[event.who] = Math.max(0, Math.min(1, event.value / MAX_METER));
+      updateAggression(event.who);
       break;
     }
 

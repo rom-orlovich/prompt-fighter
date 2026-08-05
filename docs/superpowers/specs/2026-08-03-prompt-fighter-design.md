@@ -167,6 +167,48 @@ callouts (`ROUND 1 — FIGHT!`, `COUNTER!`, `CRITICAL — CITED SOURCE!`, `K.O.`
 Three.js primitives and DOM — no post-processing stack, no particle library. Sound is
 synthesized in WebAudio — no audio files.
 
+**Aggressive stance and reactive energy (G21).** A critic pass on the shipped roster (G15-G20)
+found the fighters mechanically rich but visually inert: `Sword_Idle` is a wide, upright,
+essentially neutral combat stance with no forward lean anywhere on the rig, the brand-tint
+emissive glow was a flat constant (`BASE_EMISSIVE_INTENSITY`) modulated only by per-turn charge
+and hit-flash — nothing read as coiled power — and the arena's lighting was static: one ambient,
+two brand-coloured spots, one fixed rim, none of it reactive to fight state. Three changes,
+purely presentational (`src/render/fighter.ts`, `src/render/scene.ts`, `src/main.ts` —
+`src/engine/` untouched):
+
+- **Posture.** Each fighter carries a static ~3.4° forward lean toward its opponent
+  (`group.rotation.z`, pivoting at the rig's own feet rather than through the yaw already on
+  `model.rotation.y`), so a waiting fighter looms instead of standing square. A further ~2°
+  layers on top as the fighter's own "aggression" (below) builds, so a fighter visibly loads
+  forward the more dangerous it reads — combined max ~5.4°, tuned by rendering and looking:
+  enough to read as weight-forward intent, nowhere near enough to look like toppling.
+- **Reactive "coiled power."** `FighterRig.setAggression(value)` is a new 0-1 signal, eased over
+  ~0.35s rather than snapping, fed from `Math.max(meterFraction, streakFraction)` in `main.ts` —
+  a fighter reads as dangerous either on a full super meter or deep in a combo streak, whichever
+  is higher, and it decays back down as both cool off. It drives two things at once: a
+  fresnel-style rim glow along the silhouette edge, injected into the brand-tinted body
+  materials' compiled shader via `onBeforeCompile` (three.js has no built-in fresnel term, and a
+  full outline-shell duplicate mesh was rejected as too expensive to repeat across six live
+  skinned rigs — two in-arena plus four select-screen previews); and a soft additive ground glow
+  underfoot that brightens from a faint scorch at rest to a visible pool of light at full
+  meter/combo. Both are added at grazing viewing angles / underfoot only, after the
+  normal/roughness-lit surface shading is already resolved — the face-on musculature G15
+  restored is untouched; only the edge and the floor pick up the extra light.
+- **Lighting.** The two key spotlights narrowed (36°→30° cone, tighter penumbra) and brightened
+  slightly, and the rim directional light strengthened (1.6→2.0) — a more raking, better-defined
+  key light is what actually makes the normal/roughness maps read as musculature instead of a
+  soft even wash, and a stronger backlight separates the silhouette from the dark background
+  hard enough for the new rim glow to read as an edge on something already lit, not a glow
+  floating in void.
+
+Verified by rendering: the select-screen preview camera re-solves from each rig's own measured
+bounds every load (see §4 below), so the added lean doesn't reintroduce the G16 head-cropping
+bug — confirmed by screenshot, no head clipped, all four cards still fill at a consistent size.
+A same-fighter close-up before/after confirms the rim/ground-glow treatment does not wash out
+the G15 surface detail. `window.__pf.rigs[side].aggression` exposes the live eased value; an
+undriven real match shows it swing from ~0 (round open) to ~0.9+ (a deep streak or full meter)
+and back down, not a constant (`e2e/fight-feel.test.ts`).
+
 ## 6. Testing
 
 `vitest` over `engine/`. The analyzer and combat resolver are pure functions with table-driven

@@ -163,19 +163,28 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   const ambient = new THREE.AmbientLight(0x33445f, 1.1);
   scene.add(ambient);
 
-  const keyLeft = new THREE.SpotLight(0xd97757, 90, 40, Math.PI / 5, 0.45, 1.4);
+  // G21: narrower cone + tighter penumbra than before (was PI/5, 0.45) — a
+  // more raking, more defined key light is what actually makes G15's restored
+  // normal/roughness maps catch light as musculature instead of a soft, even
+  // wash. Intensity bumped to compensate for the narrower cone covering less
+  // of the arena.
+  const keyLeft = new THREE.SpotLight(0xd97757, 105, 40, Math.PI / 6, 0.35, 1.4);
   keyLeft.position.set(-6, 10, 7);
   keyLeft.castShadow = true;
   keyLeft.shadow.mapSize.set(1024, 1024);
   scene.add(keyLeft);
 
-  const keyRight = new THREE.SpotLight(0x10a37f, 90, 40, Math.PI / 5, 0.45, 1.4);
+  const keyRight = new THREE.SpotLight(0x10a37f, 105, 40, Math.PI / 6, 0.35, 1.4);
   keyRight.position.set(6, 10, 7);
   keyRight.castShadow = true;
   keyRight.shadow.mapSize.set(1024, 1024);
   scene.add(keyRight);
 
-  const rim = new THREE.DirectionalLight(0x88aaff, 1.6);
+  // G21: stronger backlight — was 1.6 — so the silhouette separates from the
+  // dark background harder, which is what makes the per-fighter rim glow
+  // (see `attachRimShader` in `fighter.ts`) read as an edge ON something
+  // already lit, not a glow floating in void.
+  const rim = new THREE.DirectionalLight(0x88aaff, 2.0);
   rim.position.set(0, 6, -12);
   scene.add(rim);
 
