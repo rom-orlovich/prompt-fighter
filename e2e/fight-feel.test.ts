@@ -893,4 +893,113 @@ test.describe('fight feel', () => {
 
     expect(errors).toEqual([]);
   });
+
+  // --- G22: a fighter must never be rendered in its bind/T-pose ------------
+  //
+  // The critic's measured defect: at the very start of a match both fighters
+  // rendered arms-out, upright — a bind/T-pose — for roughly the first third
+  // of a second while "ROUND 1" sat on screen, then snapped into the correct
+  // fighting stance. Root cause (see the long comment on `model.visible =
+  // false` in `createFighter`, `fighter.ts`): `createFighter()` stays
+  // synchronous, but the body glTF's skinned mesh renders at its rest/bind
+  // pose the instant it is added to the scene, and nothing can drive it away
+  // from that until the clip library — a SECOND async load nested inside the
+  // body's own — resolves. `model.visible` now stays false until a real pose
+  // has actually been driven through one mixer tick (or the clip load has
+  // failed outright, which still reveals rather than hides forever), which is
+  // what `FighterRig.visible()`/`inBindPose()` — and `bindPoseFlashSeen` on
+  // the debug bridge, which LATCHES true the instant a real rendered frame
+  // ever shows both at once — exist to prove against a real, undriven match.
+  test('no fighter is ever rendered in its bind/T-pose, at match start or any round-open', async ({ page }) => {
+    test.setTimeout(180000);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+
+    // Needs real rendering for both the bone-rotation signal and the
+    // screenshots below to mean anything — same self-skip as the other
+    // real-GPU specs in this file.
+    await page.goto('/');
+    const renderer = await page.evaluate(() => {
+      const probe = document.createElement('canvas');
+      const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+      if (!gl) return 'none';
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : 'unknown';
+    });
+    test.skip(
+      /swiftshader|llvmpipe|software|none/i.test(renderer),
+      `software rasteriser (${renderer}) cannot sustain the render loop — run with --headed on a real GPU`
+    );
+
+    mkdirSync(SHOTS, { recursive: true });
+    await startMatch(page, '/?fast=1&hold=1&draw=1', 0);
+
+    // (b) LOOKED AT: screenshot the exact window the critic caught the flash
+    // in — "ROUND 1" is on screen for `ROUND_INTRO_MS` before "FIGHT!" — at
+    // roughly every 100ms across the first ~700ms, for a human/agent to
+    // actually look at (see rollout step 1).
+    const openingShots: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      const path = join(SHOTS, `bindpose-open-${i}.png`);
+      await page.screenshot({ path });
+      openingShots.push(path);
+      await page.waitForTimeout(100);
+    }
+    console.log('opening-window screenshots:', openingShots.join(', '));
+
+    // Both fighters must actually become visible in short order — hidden
+    // briefly while assets settle is the fix; hidden forever is the "leave a
+    // fighter missing" failure mode G22 rules out just as firmly as the
+    // bind-pose flash itself. Polled separately from the fixed-cadence
+    // screenshot loop above so a slower asset load doesn't flake this.
+    await page.waitForFunction(
+      () => {
+        const rigs = (window as any).__pf.rigs;
+        return rigs?.p1.visible === true && rigs?.p2.visible === true;
+      },
+      null,
+      { timeout: 10000 }
+    );
+
+    // (a) MEASURED, the core assertion: `bindPoseFlashSeen` latches inside the
+    // app's own frame loop the instant ANY real rendered frame ever shows a
+    // rig both visible and in its bind pose (see `main.ts`) — sampling every
+    // frame from the moment the match starts, not merely the frames this test
+    // happens to poll. Checked here (covers the opening) and again after
+    // `matchEnd` below (covers every round-open reached in between too).
+    const openingFlash = await page.evaluate(() => ({
+      p1: (window as any).__pf.bindPoseFlashSeen('p1'),
+      p2: (window as any).__pf.bindPoseFlashSeen('p2')
+    }));
+    expect(openingFlash, 'no bind pose observed in the opening window').toEqual({ p1: false, p2: false });
+
+    // (c) ALSO CHECK ROUND TRANSITIONS: run the match to its real conclusion.
+    // `bindPoseFlash` keeps accumulating the whole time, so this covers every
+    // round-open boundary the transcript actually reaches — and since
+    // `ROUNDS_TO_WIN` is 2, no match can end before round 2 opens (a single
+    // round can only ever award one side ONE round win), so this is never a
+    // weak check that happened to skip the round-open case.
+    await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, { timeout: 120000 });
+
+    const finalRound = await page.evaluate(() => {
+      const ends = (window as any).__pf.events.filter((e: any) => e.type === 'roundEnd');
+      return ends.length ? ends[ends.length - 1].round : 1;
+    });
+    console.log(`match ended having opened round ${finalRound}`);
+    expect(
+      finalRound,
+      'the match reached at least a round-2 open (structural, see ROUNDS_TO_WIN)'
+    ).toBeGreaterThanOrEqual(2);
+
+    const finalFlash = await page.evaluate(() => ({
+      p1: (window as any).__pf.bindPoseFlashSeen('p1'),
+      p2: (window as any).__pf.bindPoseFlashSeen('p2')
+    }));
+    expect(
+      finalFlash,
+      'no bind pose observed across the whole match, including every round-open reached'
+    ).toEqual({ p1: false, p2: false });
+
+    expect(errors).toEqual([]);
+  });
 });

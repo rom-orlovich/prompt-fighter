@@ -107,6 +107,36 @@ export interface FighterRig {
   /** Current world position of the whole fighter (neutral X plus any offset). */
   worldPosition(): THREE.Vector3;
   /**
+   * Whether the loaded model is currently rendered (G22). `false` from
+   * creation until the fighter's first real pose has actually been applied
+   * AND driven through one `update()` tick — see the long comment above
+   * `model.visible = false` in `createFighter` for why gating on that instant
+   * (rather than on the body/hair finishing their async loads) is what
+   * actually closes the bind-pose flash. Exposed so a test can prove a
+   * fighter is never both `visible()` and `inBindPose()` on the same frame,
+   * and that it does not stay hidden forever (see `posesSeen`-style
+   * accounting in `main.ts`).
+   */
+  visible(): boolean;
+  /**
+   * An objective, animation-independent bind-pose signal (G22): the hand AND
+   * shoulder bones' local rotations, each compared against its own exact
+   * rest-pose rotation captured the instant the body loaded — before the
+   * mixer or any clip ever touched it. Requires BOTH to agree, not just one:
+   * a played clip that omits a track for a single bone (verified against the
+   * real rig: `win`/`Dance_Loop` has no hand track, so the mixer blends that
+   * one property back toward its saved original every frame it's the only
+   * active action) can leave that ONE bone reading bind while the rest of the
+   * rig is genuinely posed — a real unposed rig has every bone at rest
+   * simultaneously, which a real animation leaving two unrelated bones both
+   * exactly at bind is not a realistic coincidence of. Unlike
+   * `currentPose()`/`pendingPose`, this reads what the skeleton is ACTUALLY
+   * doing, not what was requested. `false` before the body has loaded (there
+   * is nothing to be in bind pose yet, and nothing rendered either — see
+   * `visible()`).
+   */
+  inBindPose(): boolean;
+  /**
    * World-space vertical extent of the loaded body + hair meshes — `null` until
    * both have settled (loaded or failed to load). Self-correcting camera framing
    * (see `select.ts`) reads this instead of a hard-coded height, so a future
@@ -201,6 +231,15 @@ const POSE_CLIPS: Record<PoseName, readonly string[]> = {
 
 /** Poses that hold their final frame instead of looping. */
 const CLAMP_POSES: ReadonlySet<PoseName> = new Set<PoseName>(['ko', 'attack', 'hurt', 'hurtHeavy', 'dodge', 'jump']);
+
+/**
+ * Angular tolerance (radians) for `inBindPose()`'s hand/shoulder-bone
+ * comparisons (G22). ~1.1°: tight enough that any played clip — including
+ * the idle stance, whose fists sit up near guard height rather than out to
+ * the sides — reads as clearly NOT bind, but loose enough to absorb ordinary
+ * floating point drift in the captured-vs-current quaternion comparison.
+ */
+const BIND_POSE_EPSILON_RAD = 0.02;
 
 /**
  * Poses held at a fraction of their clip instead of played through.
@@ -619,6 +658,19 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   const model = new THREE.Group();
   model.rotation.y = facingFor(side);
   group.add(model);
+  // G22: the body glTF's skinned mesh renders at its rest/bind pose (this
+  // rig's is an arms-out T-pose) the instant it is added to the scene — an
+  // `AnimationMixer` only exists once the body itself has loaded, and no
+  // action can play on it until the CLIP LIBRARY, a second, separate async
+  // load nested inside the body's own `onLoad`, resolves after it. That gap
+  // used to render, unposed, for however long the clip fetch took: the
+  // arms-out bind pose flash the critic caught at the "ROUND 1" announce.
+  // Keeping `model` hidden until `update()` has actually driven a real pose
+  // through one mixer tick (see the `model.visible = true` below) closes
+  // that window completely, deterministically — not just "usually fast
+  // enough" — because it never depends on load timing at all, only on this
+  // rig's own render-loop position relative to the frame that reveals it.
+  model.visible = false;
 
   let mixer: THREE.AnimationMixer | null = null;
   const actions = new Map<string, THREE.AnimationAction>();
@@ -653,6 +705,45 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
   let bodyLoaded = false;
   let hairSettled = false;
   let poseApplied = false;
+  /**
+   * The hand bone's rotation at the instant the body loaded — before the
+   * mixer or any clip has ever touched it, i.e. the true bind/rest pose (G22).
+   * `inBindPose()` compares the bone's CURRENT rotation against this. `null`
+   * until the body loads (there is no bone, and nothing rendered, yet).
+   *
+   * NOT used alone: verified empirically against the real rig that `win`
+   * (`Dance_Loop`) has no track for the hand bone at all, so while `win` is
+   * the only active action the mixer blends that ONE property back toward
+   * its saved original — its bind rotation — every frame (three.js's
+   * documented behaviour for a property no active clip is driving). That is
+   * a real, single-bone artifact, not the arms-out T-pose the critic
+   * actually caught, and checking the hand alone flagged it as one — a false
+   * positive confirmed by re-running with per-flash pose/elapsed logging and
+   * seeing it land squarely on `pose: 'win'`, both sides, never at match
+   * start or a round-open. `inBindPose()` below also requires
+   * `shoulderBindQuat` (the shoulder, actively driven either by whatever
+   * clip is playing or by the victory flourish's own arm-swing, see
+   * `upperArmBones` in `update()`) to independently agree — a real unposed
+   * rig has EVERY bone at rest simultaneously; a real animation leaving two
+   * unrelated bones both exactly at bind at once is not a realistic
+   * coincidence.
+   */
+  let bindQuat: THREE.Quaternion | null = null;
+  /** The right shoulder's bind rotation, captured the same way as `bindQuat`
+   * and for the same reason — see its doc comment. */
+  let shoulderBindQuat: THREE.Quaternion | null = null;
+  /** The right shoulder bone itself — `inBindPose()`'s second, independent
+   * check alongside the hand (see `bindQuat`). */
+  let shoulderBone: THREE.Object3D | null = null;
+  /**
+   * Set if the clip-library fetch fails outright (G22) — `applyPose` can then
+   * never succeed (`actions` stays empty forever), so nothing would ever flip
+   * `poseApplied` and reveal the model. The existing fallback intent (see the
+   * empty catch below: "the fighter still renders, just without animation")
+   * predates this loop and is preserved — a bald, unanimated, bind-posed
+   * fighter beats a fighter that is invisible for the rest of the match.
+   */
+  let animLoadFailed = false;
   /** Elapsed-clock time (see `update`'s `elapsed` param) at which `poseApplied`
    * first went true — `null` until then. */
   let poseAppliedAtElapsed: number | null = null;
@@ -865,6 +956,12 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       upperArmBones = [findBone(scene, 'upperarm_l'), findBone(scene, 'upperarm_r')].filter(
         (bone): bone is THREE.Object3D => bone !== null
       );
+      shoulderBone = findBone(scene, 'upperarm_r');
+      // G22: captured BEFORE the mixer exists and before any clip has ever
+      // played — this is the real bind pose `inBindPose()` compares against,
+      // not a guessed rotation.
+      if (handBone) bindQuat = handBone.quaternion.clone();
+      if (shoulderBone) shoulderBindQuat = shoulderBone.quaternion.clone();
       bodyLoaded = true;
 
       mixer = new THREE.AnimationMixer(scene);
@@ -883,7 +980,10 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
         },
         undefined,
         () => {
-          // No clips: the fighter still renders, just without animation.
+          // No clips: the fighter still renders, just without animation
+          // (G22: `animLoadFailed` is what makes `update()` reveal it anyway,
+          // since `poseApplied` can never go true with an empty `actions` map).
+          animLoadFailed = true;
         }
       );
 
@@ -1023,6 +1123,20 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       return group.getWorldPosition(new THREE.Vector3());
     },
 
+    visible() {
+      return model.visible;
+    },
+
+    inBindPose() {
+      // Require BOTH bones to independently read bind — see the long comment
+      // on `bindQuat` for why the hand alone false-positives during `win`.
+      if (!bindQuat || !handBone || !shoulderBindQuat || !shoulderBone) return false;
+      return (
+        handBone.quaternion.angleTo(bindQuat) < BIND_POSE_EPSILON_RAD &&
+        shoulderBone.quaternion.angleTo(shoulderBindQuat) < BIND_POSE_EPSILON_RAD
+      );
+    },
+
     playedClips() {
       return playedClipNames;
     },
@@ -1122,6 +1236,15 @@ export function createFighter(profile: FighterProfile, side: -1 | 1): FighterRig
       group.position.x = baseX + lungeOffset + knockOffset;
 
       if (mixer) mixer.update(dt);
+      // G22: reveal the model only AFTER the mixer has been ticked at least
+      // once past a real (or fallback-failed) pose — never inside the async
+      // load callback itself. `mixer.update(dt)` above and `renderer.render`
+      // are both driven by this same `stage.onFrame`/`frame()` pair every
+      // tick (see `scene.ts`), so gating the flip on having already run this
+      // tick's mixer update guarantees the very first rendered frame this
+      // model appears in is already posed — regardless of exactly when,
+      // between two frames, the async load happened to resolve.
+      if (!model.visible && (poseApplied || animLoadFailed)) model.visible = true;
       // Pin a frozen pose to its held frame every tick: the mixer keeps running
       // so the crossfade into it finishes, but the clip itself never advances.
       if (frozenAction) {

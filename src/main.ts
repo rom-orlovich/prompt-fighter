@@ -110,6 +110,14 @@ interface RigSnapshot {
    * high-meter/combo moment in a real match, not just that it was requested.
    */
   aggression: number;
+  /** Whether this rig's model is currently rendered (G22) — see `visible()`
+   * on `FighterRig`. `false` for a brief window while the body/hair/clip
+   * library are still loading; every frame observed AFTER that must never
+   * also read `bindPose: true` (see `bindPoseFlashSeen`). */
+  visible: boolean;
+  /** The objective, animation-independent bind-pose signal (G22) — see
+   * `inBindPose()` on `FighterRig`. */
+  bindPose: boolean;
 }
 
 /**
@@ -251,6 +259,18 @@ interface DebugBridge {
    * called. See the jump assertion in e2e/fight-feel.test.ts.
    */
   posesSeen(side: Speaker): string[];
+  /**
+   * `true` if, on ANY real rendered frame (`stage.onFrame`, same accounting
+   * as `posesSeen`) since the current match started, `side`'s rig was both
+   * `visible` and `inBindPose` at once — i.e. the arms-out bind/T-pose the
+   * critic caught actually painted a frame (G22). Accumulated inside the
+   * app's own frame loop rather than polled from outside: an external
+   * `page.evaluate` poll runs at whatever cadence the test script asks for
+   * and can miss a single-frame flash entirely, but nothing rendered by this
+   * loop ever skips this check. Reset every time a fresh match — and so a
+   * fresh pair of rigs — starts (see where `posesSeen` is cleared).
+   */
+  bindPoseFlashSeen(side: Speaker): boolean;
 }
 
 declare global {
@@ -315,6 +335,9 @@ window.__pf = {
   },
   posesSeen(side) {
     return [...posesSeen[side]];
+  },
+  bindPoseFlashSeen(side) {
+    return bindPoseFlash[side];
   }
 };
 
@@ -368,6 +391,8 @@ let jumpSide: Speaker | null = null;
 const standingRootY: Record<Speaker, number> = { p1: 0, p2: 0 };
 /** See `posesSeen` on `DebugBridge` (G20a). */
 const posesSeen: Record<Speaker, Set<PoseName>> = { p1: new Set(), p2: new Set() };
+/** See `bindPoseFlashSeen` on `DebugBridge` (G22). */
+const bindPoseFlash: Record<Speaker, boolean> = { p1: false, p2: false };
 /** Impacts still being measured; each is dropped once its window closes. */
 const openContacts: { record: ContactRecord; deadline: number }[] = [];
 
@@ -411,7 +436,9 @@ function snapshot(side: Speaker): RigSnapshot {
     root: rig.rootPosition().toArray() as Vec3,
     standingRootY: standingRootY[side],
     knockback: rig.knockbackOffset(),
-    aggression: rig.aggression()
+    aggression: rig.aggression(),
+    visible: rig.visible(),
+    bindPose: rig.inBindPose()
   };
 }
 
@@ -436,6 +463,9 @@ stage.onFrame((dt, elapsed, real) => {
       // G20a: records a pose only once a real frame has actually painted it —
       // see `posesSeen` on `DebugBridge`.
       posesSeen[side].add(live[side].pose);
+      // G22: latches true the moment a real rendered frame shows the model
+      // both visible and in its bind pose — see `bindPoseFlashSeen`.
+      if (live[side].visible && live[side].bindPose) bindPoseFlash[side] = true;
     }
     window.__pf.rigs = live;
     const camera = stage.camera.position;
@@ -580,6 +610,8 @@ async function startMatch(file: string): Promise<void> {
   standingRootY.p2 = 0;
   posesSeen.p1.clear();
   posesSeen.p2.clear();
+  bindPoseFlash.p1 = false;
+  bindPoseFlash.p2 = false;
   turnAttacker = null;
   turnSuperFired = null;
   resetStreak();
