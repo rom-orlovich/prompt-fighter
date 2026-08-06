@@ -18,7 +18,9 @@ import type { MatchupSelectionResult } from './engine/selection';
 import { simulateTranscript } from './engine/simulate';
 import type { SimulateResult } from './engine/simulate';
 import { createReplaySource, loadTranscript } from './sources/replay';
+import { createLiveSource } from './sources/live';
 import type { MatchSource, StreamHandlers } from './sources/types';
+import { createBrain } from './brains/index';
 import { createAudio, SFX_CUES, type Sfx, type SfxCue } from './render/audio';
 import { createFighter, type FighterRig, type PoseName } from './render/fighter';
 import { createFx } from './render/fx';
@@ -74,6 +76,26 @@ const STAGES = [
   { file: 'microservices.json', vs: 'CLAUDE vs CODEX', topic: 'should a 3-person team use microservices?' },
   { file: 'tabs-vs-spaces.json', vs: 'GEMINI vs LOCAL 7B', topic: 'tabs or spaces' }
 ];
+
+/**
+ * Live Mode: same names/topic `cli/fight.ts` defaults to with no flags, so a browser
+ * live match and `npm run fight` demonstrate the identical matchup out of the box.
+ * Both brains are always the deterministic `local` one (see `brains/local.ts`) — a
+ * real `OPENROUTER_API_KEY` is a server-side secret (`brains/openrouter.ts` reads it
+ * from `process.env`, the CLI/server's Node process); a browser bundle served to
+ * every visitor is never a safe place to hold or forward that key, so this UI never
+ * offers an "openrouter" brain choice. This mirrors the CLI's own default (`--brain`
+ * defaults to `"local"` unless a caller explicitly opts into `--brain openrouter`),
+ * so "no key configured" behaves identically in both places without any key-sniffing
+ * logic here.
+ */
+const LIVE_NAMES = { p1: 'CLAUDE', p2: 'CODEX' };
+const LIVE_TOPIC = 'LIVE MODE: WHICH MODEL ARGUES BETTER';
+/** Per-word streaming delay for a live turn, mirroring `replay.ts`'s own CHUNK_MS
+ * cadence (scaled by the same `?fast=1` pace) so a live match reads at the same
+ * arcade pace as a scripted one instead of a local brain's near-instant reply
+ * rendering the whole turn in a single frame. */
+const LIVE_CHUNK_MS = FAST ? 2 : 55;
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
@@ -577,6 +599,12 @@ for (const entry of STAGES) {
   picker.appendChild(card);
 }
 
+// Live Mode entry point — a real fighter brain plays both sides automatically
+// instead of replaying a bundled transcript. Visually distinct from (and placed
+// apart from) the `.stage-card` grid above: those pick a *scripted* fight, this
+// starts a *live* one.
+document.getElementById('live-mode-btn')!.addEventListener('click', () => void startLiveMatch());
+
 document.getElementById('rematch')!.addEventListener('click', () => {
   resultOverlay.classList.add('hidden');
   titleOverlay.classList.remove('hidden');
@@ -586,16 +614,60 @@ document.getElementById('rematch')!.addEventListener('click', () => {
 // --- match lifecycle -----------------------------------------------------
 
 async function startMatch(file: string): Promise<void> {
-  source?.stop();
-
   const transcript = await loadTranscript(`${import.meta.env.BASE_URL}transcripts/${file}`);
+  const replaySource = createReplaySource(transcript, { pace: REPLAY_PACE });
 
   // Transcript name first, deterministic hash otherwise (selectFighter's own
   // rule) — with the player's chosen character-select card, if any, overriding
   // which fighter p1 resolves to. p2 always follows the transcript.
+  await beginMatch(replaySource, {
+    topic: transcript.topic,
+    names: { p1: transcript.p1, p2: transcript.p2 },
+    p1TranscriptFighter: playerCardOverride ?? transcript.p1
+  });
+}
+
+/**
+ * Live Mode: the same `MatchSource` seam a replay uses, just driven by two
+ * `FighterBrain`s (`brains/local.ts`, deterministic — see the doc comment on
+ * `LIVE_NAMES` for why this UI never offers the `openrouter` brain) instead of a
+ * bundled transcript. `beginMatch` below cannot tell the two sources apart — this
+ * is the entire point of the `MatchSource` interface (`sources/types.ts`) — so a
+ * live match gets the exact same round/HUD/renderer pipeline a scripted one does,
+ * with zero duplicated wiring.
+ */
+async function startLiveMatch(): Promise<void> {
+  const brains = { p1: createBrain('local'), p2: createBrain('local') };
+  const liveSource = createLiveSource(LIVE_TOPIC, LIVE_NAMES, brains, { chunkMs: LIVE_CHUNK_MS });
+
+  await beginMatch(liveSource, {
+    topic: LIVE_TOPIC,
+    names: LIVE_NAMES,
+    p1TranscriptFighter: playerCardOverride ?? LIVE_NAMES.p1
+  });
+}
+
+interface BeginMatchOptions {
+  topic: string;
+  names: { p1: string; p2: string };
+  /** What `selectFighter` treats as the transcript-side override for p1 — a real
+   * bundled transcript's own `p1` name, or (for live mode) the player's chosen
+   * character-select card, falling back to `LIVE_NAMES.p1`. p2 always follows
+   * `names.p2` directly, matching `startMatch`'s pre-existing asymmetric rule. */
+  p1TranscriptFighter: string;
+}
+
+/** Shared match bring-up: resolves the fighter matchup, resets every debug-bridge
+ * and presentation counter, builds the two rigs, and starts `runLoop` against
+ * whichever `MatchSource` the caller built (`createReplaySource` or
+ * `createLiveSource`) — the one thing a replay and a live match do differently. */
+async function beginMatch(matchSource: MatchSource, options: BeginMatchOptions): Promise<void> {
+  source?.stop();
+
+  const { topic, names, p1TranscriptFighter } = options;
   const matchup = selectMatchup(
-    { modelName: transcript.p1, transcriptFighter: playerCardOverride ?? transcript.p1 },
-    { modelName: transcript.p2, transcriptFighter: transcript.p2 }
+    { modelName: names.p1, transcriptFighter: p1TranscriptFighter },
+    { modelName: names.p2, transcriptFighter: names.p2 }
   );
   window.__pf.selection = matchup;
   window.__pf.events = [];
@@ -637,7 +709,7 @@ async function startMatch(file: string): Promise<void> {
   hud.setMeter('p1', 0);
   hud.setMeter('p2', 0);
   hud.setRound(1);
-  hud.subtitle(transcript.topic, '#ffd166', '');
+  hud.subtitle(topic, '#ffd166', '');
   hud.show();
 
   selectScreen.highlight(matchup.p1.fighter, matchup.p2.fighter);
@@ -645,7 +717,7 @@ async function startMatch(file: string): Promise<void> {
   titleOverlay.classList.add('hidden');
   resultOverlay.classList.add('hidden');
 
-  source = createReplaySource(transcript, { pace: REPLAY_PACE });
+  source = matchSource;
   roundClock = ROUND_SECONDS;
   roundJustEnded = false;
   fighting = true;

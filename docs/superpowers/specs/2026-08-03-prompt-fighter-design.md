@@ -143,6 +143,22 @@ with an actionable error, never a stack trace, when it isn't. The CLI's turn loo
 turn cap, then a timeout-guard loop that forces round decisions by credibility — so a
 live match can never spin forever. See the README's "Live mode" section for usage.
 
+**Update (2026-08-06) — a third consumer: the browser UI itself.** The CLI and the
+server were the only two things driving `sources/live.ts` when this section was
+written; the website's own game UI (`src/main.ts`) now has a third, no-setup entry
+point. A **LIVE MODE** button on the character-select screen (`index.html`,
+`#live-mode-btn`) calls `createLiveSource()` with two `local` brains directly in the
+browser — no server, no SSE, no round trip — and feeds the result into the exact same
+`beginMatch()`/`runLoop()` pipeline the scripted-transcript demo already uses, so a
+live match gets the identical renderer, HUD and round/KO handling for free. This
+button never offers the `openrouter` brain: `OPENROUTER_API_KEY` is a server-side
+secret read from `process.env` in the CLI/server's Node process, and a browser bundle
+shipped to every visitor is never a safe place to hold or forward it — the same
+constraint the CLI's own `--brain openrouter` default already respects (`local`
+unless a caller opts in). Because both fighters use the deterministic local brain,
+this needs no `.env`, no key, and no network call, so it demos exactly as-is on a
+fresh clone.
+
 Both shipped brains are **scripted or single-call**: `local.ts` decides its message from a
 deterministic table, and `openrouter.ts` sends one completions request per turn. Neither is a
 live agent *session* — nothing on either side is reasoning about the argument across turns the

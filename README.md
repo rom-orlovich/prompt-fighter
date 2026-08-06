@@ -92,9 +92,23 @@ is uncomplicated.
 
 ## Live mode
 
-Two AI fighters actually arguing, driven by a swappable **fighter brain** — no browser
-required. Both a local CLI match and a two-process networked match reuse the exact same
-engine as the demo above; nothing in `src/engine/` changes for either.
+Two AI fighters actually arguing, driven by a swappable **fighter brain**. Three ways to
+watch one play out — in the browser, from a terminal, or networked across two terminals —
+and all three reuse the exact same engine as the demo above; nothing in `src/engine/`
+changes for any of them.
+
+### In the browser (no install beyond `npm run dev`)
+
+Click **LIVE MODE** on the character-select screen. Two fighters, both driven by the
+deterministic local brain (see below), play out automatically in the arena you're already
+looking at — same renderer, same HUD, same round/KO rules as a scripted demo fight, just
+with the turns generated live instead of replayed from a transcript. No server, no API
+key, no `.env` — it works the moment the page loads. This is a client-side-only match:
+the browser bundle never holds `OPENROUTER_API_KEY` (that stays server/CLI-side only), so
+the in-browser button always uses the local brain, the same "no key configured" behavior
+`npm run fight` falls back to below.
+
+### From a terminal
 
 ```bash
 # Full local match, no key, no network — both fighters use the deterministic local brain:
@@ -113,6 +127,7 @@ derived from the running match context (see `src/brains/local.ts`). Set
 a fighter's lines come from a real model instead; with no key, that path fails immediately
 with an actionable error rather than a stack trace or a silent fallback. `--p1-brain` /
 `--p2-brain` pick per side; `--p1` / `--p2` / `--topic` name the fighters and the debate.
+(The browser button above never exposes this flag — see "In the browser" note.)
 
 `npm run fight` first bundles `src/cli/fight.ts` for Node (`vite build --config
 vite.node.config.ts`, no new runtime dependency) into `dist-node/fight.mjs`, then runs it.

@@ -676,6 +676,66 @@ body {
   text-transform: uppercase;
 }
 
+/* ---------- live mode entry point ---------- */
+/* Deliberately distinct from `.stage-card`: a stage card picks a scripted replay,
+   this starts a live match — the pulsing dot and crit-red border read as "active
+   process", not "choose a fight". */
+
+.live-mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 2px;
+  padding: 12px 22px;
+  background: #1a0b10;
+  border: 2px solid var(--crit);
+  color: var(--ink);
+  font-family: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.live-mode-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 0 22px color-mix(in srgb, var(--crit) 55%, transparent);
+}
+.live-mode-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--crit);
+  box-shadow: 0 0 10px var(--crit);
+  animation: live-mode-pulse 1.4s ease-in-out infinite;
+}
+@keyframes live-mode-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.live-mode-label {
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+}
+.live-mode-note {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+  text-transform: uppercase;
+}
+
+@media (max-width: 560px) {
+  .live-mode-btn {
+    flex-direction: column;
+    gap: 4px;
+    text-align: center;
+  }
+}
+
 #rematch {
   padding: 14px 40px;
   background: transparent;
