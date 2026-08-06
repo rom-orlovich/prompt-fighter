@@ -493,3 +493,13 @@ npx playwright test e2e/demo-recording.test.ts --headed
 The demo under `demo/` is produced this way, then verified by extracting frames and
 checking them by eye — a valid video file with the wrong content (a black void, a mirror
 match, a frozen clock) is exactly the failure this whole spec exists to prevent.
+
+**What a real run reports (measured 2026-08-06).** This self-skip is not unique to
+`demo-recording.test.ts`: **5 of the e2e suite's 18 specs** gate on the same software-rasteriser
+check. So `npx playwright test --workers=2` on a GPU-less host is **13 passed / 5 skipped / 0
+failed** — the honest ceiling there, not a partial failure. `--headed` does not change it: it
+launches fine given any X server, but an `Xvfb`-style display is still software rendering, so
+the same 5 skip. Reaching 18/18 requires an actual GPU. The 2026-08-03 design spec's §5 once
+claimed a flat "18/18 headed, real GPU, `--workers=2` all green"; it now carries the same
+split, so the two docs no longer disagree. Unit tests are host-independent: **186 vitest
+specs** as of the same date.

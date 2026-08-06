@@ -16,6 +16,17 @@ const ASSERT =
 const CONCEDE = /\b(you'?re right|you are right|i agree|good point|fair enough|i concede|granted)\b/i;
 const CONTRAST = /\b(but|however|although|still|that said|yet|nonetheless)\b/i;
 const SELF_CORRECT = /\b(actually|i was wrong|correction|i misspoke|let me reconsider|on reflection)\b/i;
+/**
+ * A direct attack on the opponent's reasoning — the message form of the `UNDERCUT`
+ * player action's own instruction, "find the flaw in their argument" (§3).
+ *
+ * Deliberately narrow: only unambiguous rebuttal phrasing, never a bare negation
+ * ("no", "that is a myth") that the length-based JAB/STRIKE/HEAVY branches already
+ * classify correctly. A rebuttal that also *cites* something still resolves as
+ * `CRIT`, because evidence outranks framing everywhere else in this table too.
+ */
+const UNDERCUT =
+  /\b(that'?s (just )?(wrong|false|backwards)|that is (just )?(wrong|false|backwards)|the flaw (in|with)|you'?re (missing|ignoring|overlooking)|you are (missing|ignoring|overlooking)|does ?n'?t hold|does not hold|misses the point|fails to account|overlooks|ignores|contradicts|circular reasoning|begs the question|falls apart)\b/i;
 
 const CODE_FENCE = /```[\s\S]*?```/;
 const URL = /https?:\/\/\S+/;
@@ -47,6 +58,7 @@ export function analyze(text: string, ctx: AnalyzeContext = {}): MoveIntent {
   const concedes = CONCEDE.test(text);
   const contrasts = CONTRAST.test(text);
   const selfCorrects = SELF_CORRECT.test(text);
+  const undercuts = UNDERCUT.test(text);
 
   const loopScore = ctx.previousOwnText ? similarity(text, ctx.previousOwnText) : 0;
   // With no prior opponent message there is no thread to break yet.
@@ -102,6 +114,14 @@ export function analyze(text: string, ctx: AnalyzeContext = {}): MoveIntent {
     power = weight * 2;
     meterGain = 18;
     label = 'CITED EVIDENCE';
+  } else if (undercuts) {
+    // Ranked below CRIT (evidence still outranks framing) but above the plain
+    // length branches: *going after the flaw* is a deliberate move, not just a
+    // reply of some length. `PIVOT` is what beats it — see `combat.ts`.
+    kind = 'UNDERCUT';
+    power = weight;
+    meterGain = 12;
+    label = 'FOUND THE FLAW';
   } else if (hedges >= 2) {
     kind = 'GUARD';
     power = 3;

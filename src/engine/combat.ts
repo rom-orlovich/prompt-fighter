@@ -14,6 +14,14 @@ export const SUPER_NAMES: Record<string, string> = {
   'LOCAL 7B': 'FAST INFERENCE'
 };
 
+/**
+ * How hard the "…but" half of a `PARRY` comes back — see the `PARRY -> COUNTER`
+ * block in `resolve`. Sits between a plain hit (1×) and the `UNDERCUT`-punishes-
+ * `HEAVY` counter (1.5× of an already-heavy blow): conceding first costs you the
+ * opening exchange, so the return is a real punish but not the biggest one.
+ */
+const PARRY_COUNTER_MULTIPLIER = 1.5;
+
 export function newMatch(
   playerSide: Speaker = 'p1',
   p1Name = 'CLAUDE',
@@ -171,8 +179,20 @@ export function resolve(input: ResolveInput): CombatEvent[] {
         break;
 
       case 'PIVOT':
-        damage *= 0.7;
-        atk.combo = 0;
+        // `Pivot > Undercut`, the third leg of §3's rock-paper-scissors core:
+        // changing the framing leaves a flaw-hunting rebuttal with nothing left
+        // to cut, so it lands on empty air instead of being merely reduced.
+        // Guarded on `isSuper` like every other stance win here — a super is
+        // never evaded.
+        if (intent.kind === 'UNDERCUT' && !isSuper) {
+          countered = true;
+          atk.combo = 0;
+          damage = 0;
+          events.push({ type: 'whiff', by: attacker });
+        } else {
+          damage *= 0.7;
+          atk.combo = 0;
+        }
         break;
 
       case 'FACT_STRIKE':
@@ -217,6 +237,38 @@ export function resolve(input: ResolveInput): CombatEvent[] {
   }
 
   damage = Math.round(damage);
+
+  // PARRY -> COUNTER (design spec §2's `"I agree, but…"` row). Without this a
+  // PARRY resolved as an ordinary hit, which is the one row of the combat table
+  // the resolver never actually implemented.
+  //
+  // "I agree, but…" is two beats in one message: the concession absorbs the
+  // opponent's momentum (their combo dies on it, exactly as a topic shift kills
+  // the speaker's own), and the "but…" returns as a COUNTER rather than a plain
+  // hit — which is also what earns the renderer's `COUNTER!` callout and the
+  // heavier hit reaction it already gives every other counter.
+  //
+  // Applied directly, and `damage` zeroed afterwards, so the blow is never also
+  // paid out a second time by the normal hit path below. That mirrors how the
+  // two pre-existing counters (`UNDERCUT` vs `HEAVY`, `FACT_STRIKE` vs a hedge)
+  // already resolve, shield-bypass included — a counter has always landed on
+  // credibility directly in this engine, and this stays consistent with that
+  // rather than inventing a third damage path.
+  // `!isSuper` for the same reason every other stance win here carries it: a
+  // super sits above the rock-paper-scissors layer. A full-meter PARRY already
+  // fires as its fighter's signature move, with its own event, callout and
+  // heaviest-reaction FX — reframing that same blow as a counter on top would be
+  // a second resolution of one strike, not a better one.
+  if (intent.kind === 'PARRY' && !countered && !isSuper) {
+    if (def.combo > 0) {
+      def.combo = 0;
+      events.push({ type: 'comboBreak', by: defender });
+    }
+    const counterDamage = Math.round(damage * PARRY_COUNTER_MULTIPLIER);
+    def.credibility = Math.max(0, def.credibility - counterDamage);
+    events.push({ type: 'counter', by: attacker, damage: counterDamage });
+    damage = 0;
+  }
 
   // Every credibility-affecting hit this turn (the main attack, plus a super's
   // direct drain if one fired) goes through the same shield-absorption step —

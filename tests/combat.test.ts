@@ -62,6 +62,121 @@ describe('resolve', () => {
     expect(s.p1.credibility).toBeLessThan(100);
   });
 
+  // Design spec §2: `"I agree, but…"` maps to `PARRY` -> `COUNTER`. Before this,
+  // a PARRY fell through every branch and resolved as an ordinary hit.
+  describe('PARRY -> COUNTER', () => {
+    const parry = (over = {}) => intent({ kind: 'PARRY', power: 9, label: 'YES, BUT', ...over });
+
+    it('resolves as a counter, not as a plain hit', () => {
+      const s = newMatch();
+      const evts = resolve({ attacker: 'p2', intent: parry(), playerAction: 'NONE', state: s });
+      expect(evts.some((e) => e.type === 'counter' && e.by === 'p2')).toBe(true);
+      // The counter *replaces* the hit — the blow must never be paid out twice.
+      expect(damageTo(evts, 'p1')).toBe(0);
+      expect(s.p1.credibility).toBeLessThan(100);
+    });
+
+    it('hits harder than the same move would as a plain hit', () => {
+      const parried = newMatch();
+      resolve({ attacker: 'p2', intent: parry(), playerAction: 'NONE', state: parried });
+      const plain = newMatch();
+      resolve({ attacker: 'p2', intent: intent({ kind: 'STRIKE', power: 9 }), playerAction: 'NONE', state: plain });
+      expect(parried.p1.credibility).toBeLessThan(plain.p1.credibility);
+    });
+
+    it('deflects the opponent momentum it just conceded to', () => {
+      const s = newMatch();
+      // p1 has a combo going; p2 answers "I agree, but…" and it dies on the concession.
+      s.p1.combo = 3;
+      const evts = resolve({ attacker: 'p2', intent: parry(), playerAction: 'NONE', state: s });
+      expect(s.p1.combo).toBe(0);
+      expect(evts.some((e) => e.type === 'comboBreak' && e.by === 'p1')).toBe(true);
+    });
+
+    it('can land the KO itself', () => {
+      const s = newMatch();
+      s.p1.credibility = 3;
+      const evts = resolve({ attacker: 'p2', intent: parry(), playerAction: 'NONE', state: s });
+      expect(evts.some((e) => e.type === 'ko' && e.loser === 'p1')).toBe(true);
+      expect(s.p1.credibility).toBe(0);
+    });
+
+    it('stays a super rather than also converting to a counter', () => {
+      // A super sits above the rock-paper-scissors layer, as it does for every
+      // other stance win here: one strike resolves once. Converting it as well
+      // double-resolved the same blow and ended matches on the super beat.
+      const s = newMatch();
+      s.p2.meter = 100;
+      const evts = resolve({ attacker: 'p2', intent: parry(), playerAction: 'NONE', state: s });
+      expect(evts.some((e) => e.type === 'super')).toBe(true);
+      expect(evts.some((e) => e.type === 'counter')).toBe(false);
+      expect(s.p1.credibility).toBeLessThan(100);
+    });
+
+    it('still yields to the defender own counter-stance', () => {
+      // A hedging PARRY walking into FACT_STRIKE is punished as the hedge it is —
+      // the defender's counter wins, and the parry never converts.
+      const s = newMatch();
+      const evts = resolve({
+        attacker: 'p2',
+        intent: parry({ tags: ['hedge'] }),
+        playerAction: 'FACT_STRIKE',
+        state: s
+      });
+      expect(evts.some((e) => e.type === 'counter' && e.by === 'p1')).toBe(true);
+      expect(evts.some((e) => e.type === 'counter' && e.by === 'p2')).toBe(false);
+      expect(s.p1.credibility).toBe(100);
+    });
+  });
+
+  // Design spec §3 rock-paper-scissors core: `Pivot > Undercut`. Before this,
+  // UNDERCUT existed only as a player action, so the rule was unreachable.
+  describe('PIVOT beats an incoming UNDERCUT', () => {
+    const undercut = (over = {}) =>
+      intent({ kind: 'UNDERCUT', power: 11, label: 'FOUND THE FLAW', ...over });
+
+    it('evades it outright — no damage at all', () => {
+      const s = newMatch();
+      const evts = resolve({ attacker: 'p2', intent: undercut(), playerAction: 'PIVOT', state: s });
+      expect(s.p1.credibility).toBe(100);
+      expect(damageTo(evts, 'p1')).toBe(0);
+      expect(evts.some((e) => e.type === 'whiff' && e.by === 'p2')).toBe(true);
+    });
+
+    it('breaks the undercutter combo', () => {
+      const s = newMatch();
+      s.p2.combo = 4;
+      resolve({ attacker: 'p2', intent: undercut({ continuesThread: false }), playerAction: 'PIVOT', state: s });
+      expect(s.p2.combo).toBe(0);
+    });
+
+    it('is strictly better than pivoting into anything else', () => {
+      const vsUndercut = newMatch();
+      resolve({ attacker: 'p2', intent: undercut(), playerAction: 'PIVOT', state: vsUndercut });
+      const vsStrike = newMatch();
+      resolve({ attacker: 'p2', intent: intent({ kind: 'STRIKE', power: 11 }), playerAction: 'PIVOT', state: vsStrike });
+      expect(vsStrike.p1.credibility).toBeLessThan(vsUndercut.p1.credibility);
+      expect(vsUndercut.p1.credibility).toBe(100);
+    });
+
+    it('does not evade a super', () => {
+      const s = newMatch();
+      s.p2.meter = 100;
+      const evts = resolve({ attacker: 'p2', intent: undercut(), playerAction: 'PIVOT', state: s });
+      expect(evts.some((e) => e.type === 'super')).toBe(true);
+      expect(s.p1.credibility).toBeLessThan(100);
+    });
+
+    it('leaves every other stance reduced-but-landing against an UNDERCUT', () => {
+      // Only PIVOT beats it — GUARD still eats chip damage, NONE eats it clean.
+      for (const action of ['GUARD', 'NONE'] as const) {
+        const s = newMatch();
+        resolve({ attacker: 'p2', intent: undercut(), playerAction: action, state: s });
+        expect(s.p1.credibility, `${action} should still take damage`).toBeLessThan(100);
+      }
+    });
+  });
+
   it('FACT_STRIKE punishes an opponent who hedges', () => {
     const s = newMatch();
     const evts = resolve({
@@ -73,6 +188,19 @@ describe('resolve', () => {
     expect(evts.some((e) => e.type === 'counter')).toBe(true);
     expect(s.p2.credibility).toBeLessThan(100);
     expect(s.p1.credibility).toBe(100);
+  });
+
+  it('runs end-to-end from raw text as a PARRY that counters', () => {
+    const s = newMatch();
+    const evts = resolve({
+      attacker: 'p2',
+      intent: analyze('I agree, but that only holds under low load.'),
+      playerAction: 'NONE',
+      state: s
+    });
+    expect(evts.some((e) => e.type === 'attack' && e.kind === 'PARRY')).toBe(true);
+    expect(evts.some((e) => e.type === 'counter')).toBe(true);
+    expect(s.p1.credibility).toBeLessThan(100);
   });
 
   it('builds a combo when the attacker continues the thread', () => {

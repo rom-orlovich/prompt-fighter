@@ -33,18 +33,42 @@ class Gate {
   }
 }
 
+/**
+ * Splits a `--connect` argument into the base URL and the match token, so the
+ * token `--serve` prints as part of one pasteable URL
+ * (`http://host:port?token=abc`) needs no extra flag or manual step from whoever
+ * connects. An explicit `--token` still wins over an embedded one (see
+ * `fight.ts`); a URL with neither yields `undefined` and the server answers 401,
+ * which is the honest outcome rather than a confusing hang.
+ */
+export function parseConnectUrl(raw: string): { base: string; token?: string } {
+  const parsed = new URL(raw);
+  const token = parsed.searchParams.get('token') ?? undefined;
+  parsed.search = '';
+  parsed.hash = '';
+  return { base: parsed.toString().replace(/\/$/, ''), token };
+}
+
 export interface RunRemoteClientOptions {
   url: string;
   side: Speaker;
   brain: FighterBrain;
+  /** Overrides a token embedded in `url`. */
+  token?: string;
   log?: (line: string) => void;
 }
 
 export async function runRemoteClient(options: RunRemoteClientOptions): Promise<void> {
-  const { url, side, brain } = options;
+  const { side, brain } = options;
   const log = options.log ?? console.log;
 
-  const initial = await fetchState(url);
+  const { base: url, token: urlToken } = parseConnectUrl(options.url);
+  const token = options.token ?? urlToken;
+  // Sent on every request, including the SSE stream — the server accepts this or
+  // `?token=`, and a header keeps the secret out of any URL that gets logged.
+  const auth: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+
+  const initial = await fetchState(url, auth);
   const names: Names = initial.names;
 
   const client = new ClientState(names, initial);
@@ -68,7 +92,7 @@ export async function runRemoteClient(options: RunRemoteClientOptions): Promise<
   // connection when the match ends can reject this before the main loop gets back
   // around to it, and an unattached rejection at that point would surface as an
   // unhandled-rejection warning even though it is expected, routine shutdown.
-  const streamDone = streamSSE(url, controller.signal, (snapshot) => {
+  const streamDone = streamSSE(url, auth, controller.signal, (snapshot) => {
     client.apply(snapshot, log);
     gate.notify();
   }).catch((err) => {
@@ -89,7 +113,7 @@ export async function runRemoteClient(options: RunRemoteClientOptions): Promise<
       const text = await brain.nextMessage(ctx);
       const res = await fetch(`${url}/turn`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...auth },
         body: JSON.stringify({ speaker: side, text })
       });
       if (!res.ok) {
@@ -157,18 +181,31 @@ function findWinner(events: SessionSnapshot['events']): Speaker | undefined {
   return matchEnd?.winner;
 }
 
-async function fetchState(url: string): Promise<SessionSnapshot> {
-  const res = await fetch(`${url}/state`);
+async function fetchState(url: string, auth: Record<string, string>): Promise<SessionSnapshot> {
+  const res = await fetch(`${url}/state`, { headers: auth });
+  // A 401 here is the common first-run mistake (connect URL pasted without its
+  // `?token=`), so it says that rather than the bare status line the CLI would
+  // otherwise print as "live mode failed: ...".
+  if (res.status === 401) {
+    throw new Error(
+      `server at ${url} rejected the match token — connect with the full URL ` +
+        '`--serve` printed (it includes `?token=…`), or pass --token'
+    );
+  }
   if (!res.ok) throw new Error(`could not reach server at ${url}: ${res.status} ${res.statusText}`);
   return (await res.json()) as SessionSnapshot;
 }
 
 async function streamSSE(
   url: string,
+  auth: Record<string, string>,
   signal: AbortSignal,
   onMessage: (snapshot: SessionSnapshot) => void
 ): Promise<void> {
-  const res = await fetch(`${url}/stream`, { signal, headers: { Accept: 'text/event-stream' } });
+  const res = await fetch(`${url}/stream`, {
+    signal,
+    headers: { Accept: 'text/event-stream', ...auth }
+  });
   if (!res.ok || !res.body) throw new Error(`SSE connect failed: ${res.status}`);
 
   const reader = res.body.getReader();

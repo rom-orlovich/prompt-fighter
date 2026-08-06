@@ -48,7 +48,19 @@ The core translation table from conversation to combat:
 | Changes the subject | combo breaker |
 | Repeats itself / loops | `SELF_HIT` — confusion, self-damage |
 | Full agreement / concession | credibility loss |
+| Attacks the flaw in the opponent's argument | `UNDERCUT` — strong, but `Pivot` evades it |
 | Self-correction ("actually, I was wrong") | credibility loss **but** super meter gain |
+
+> **Implemented 2026-08-06.** The `PARRY` → `COUNTER` row and §3's `Pivot > Undercut` were
+> both specified here but absent from `combat.ts`: a `PARRY` fell through every branch and
+> resolved as an ordinary hit, and `UNDERCUT` existed only as a *player action*, never as an
+> incoming move the resolver could check against — so that leg of the rock-paper-scissors core
+> was unreachable rather than merely unimplemented. Both are real now:
+> a `PARRY` deflects the opponent's combo and returns as a `counter` event at 1.5× (a super
+> `PARRY` stays a super — supers sit above this layer, as they already did for every other
+> stance win), and `UNDERCUT` is a `MoveKind` the analyzer produces from unambiguous rebuttal
+> phrasing, which `PIVOT` evades outright. Table-driven cases for both live in
+> `tests/combat.test.ts` and `tests/analyzer.test.ts`.
 
 The self-correction rule is deliberate: intellectual honesty costs you in the short term and
 wins you the round in the long term. It is the most interesting risk/reward in the system.
@@ -84,7 +96,13 @@ Rock-paper-scissors core: `Undercut` > `HEAVY`, `Fact Strike` > `Guard`, `Pivot`
 ### Match structure
 
 - Credibility: 100 per fighter.
-- Best of 3 rounds, 90-second round timer.
+- Best of 3 rounds, **99**-second round timer (`ROUND_SECONDS` in `main.ts`). This doc said
+  "90-second" until 2026-08-06; the code has read 99 since the first playable build, the
+  roster spec's own software-rendering note already quoted "its opening `99`", and 99 is the
+  arcade convention the whole clock is styled after — so the number here was the stale one,
+  not the code. It is also *arcade* seconds, not real ones: `CLOCK_RATE = 0.75` deliberately
+  runs the clock slow (a 1.0 clock outran the debate and ended almost every round on a
+  decision), so 99 on the HUD is about 132 real seconds.
 - Credibility to 0 → `ARGUMENT COLLAPSED` (KO).
 - Timer expiry → higher credibility takes the round.
 
@@ -227,10 +245,19 @@ for "two windows, one fight" is proven while neither side is yet a real reasonin
 
 **Open items for the remote case** (not solved here — flagged honestly, not designed):
 
-- **No authentication on the connect API.** Any client that can reach the port can `GET /state`
-  and `POST /turn` as either side; the server only rejects out-of-order or post-KO turns, never
-  an unexpected *caller*. Fine on loopback, unresolved once the port is reachable by anyone else.
-- **No TLS.** `--connect` is plain HTTP, so a remote match's traffic is unencrypted in transit.
+- ~~**No authentication on the connect API.**~~ **Addressed 2026-08-06 (minimally).** This was
+  not merely theoretical: a review reproduced it on a live server, impersonating *both* p1 and
+  p2 through unauthenticated `POST /turn`. `--serve` now mints a random per-run **match token**
+  and prints the connect URL with it embedded, so joining stays one copy-paste; every route
+  (`/state`, `/stream`, `/turn`) rejects a missing or wrong token with `401`, accepting it as
+  `?token=` or `Authorization: Bearer`. There is no code path that starts an unauthenticated
+  server — a token is generated when the caller doesn't pin one. This is deliberately the
+  smallest thing that stops an unexpected *caller*: no accounts, no persistence, no expiry, and
+  it dies with the process. It does **not** make the port safe to expose publicly, because the
+  next gap is unchanged:
+- **No TLS.** `--connect` is plain HTTP, so a remote match's traffic — now including the match
+  token — is unencrypted in transit. This is the reason the token above raises the bar for a
+  friend match on a trusted network without making public exposure acceptable.
 - **Reachability is unspecified.** Exposing `--serve` to a friend means a public address, port
   forwarding, or a tunnel/VPN; the spec picks none of these and the CLI helps with none of them.
 
@@ -376,8 +403,27 @@ where before it was a uniform neon-green mannequin. On the select grid, all four
 instantly tellable apart: three share a body but differ by hairstyle, build and a clearly
 brand-coloured trunks accent (most visible on CODEX's mint-green and GEMINI's bright blue against
 their cooler key-light tint; present but subtler on CLAUDE, whose warm key light sits closer in
-hue to its own brand orange). 124 unit tests, tsc, build and the full e2e suite (18/18 headed,
-real GPU, `--workers=2`) all green.
+hue to its own brand orange).
+
+**What was verified, and where (corrected 2026-08-06).** This paragraph previously claimed
+"124 unit tests, tsc, build and the full e2e suite (18/18 headed, real GPU, `--workers=2`) all
+green" as one flat fact. Two halves of that need separating, because they are not verifiable in
+the same place:
+
+- **The rendering claims above (G21/G23) were genuinely observed**, on a real-GPU dev machine,
+  by the before/after git-stash screenshot technique each section describes. Nothing here
+  retracts them — they are just not re-checkable on a host without a GPU.
+- **"18/18" is not reproducible on a GPU-less host, and was never the whole suite passing.**
+  The e2e suite is 18 specs, 5 of which deliberately self-skip when they detect a software
+  rasteriser (`swiftshader|llvmpipe|software|none`) rather than assert something weaker — see
+  the roster spec's "Recording the demo needs a real GPU". A real `npx playwright test
+  --workers=2` on a software rasteriser is therefore **13 passed / 5 skipped / 0 failed**,
+  verified repeatedly on 2026-08-06. `--headed` *does* launch here (there is an X server) but
+  changes nothing: the rasteriser is still software, so the same 5 specs still skip. "18/18"
+  would require a real GPU, where those 5 stop skipping and actually run.
+- Unit tests, `tsc --noEmit` and both builds are host-independent and green: **186 vitest tests**
+  as of 2026-08-06 (124 was the count when this line was first written; the suite has grown
+  since, including this date's PARRY/UNDERCUT/connect-auth additions).
 
 ### Open gap — it does not yet feel like a real fighting game (unmet, 2026-08-06)
 

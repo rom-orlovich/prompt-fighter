@@ -53,7 +53,8 @@ const HOLD = QUERY.get('hold') === '1';
  * `?draw=1` forces the real WebGL loop even under `?fast=1`, which otherwise
  * runs the simulation headlessly. Combined with `?hold=1` it gives a fast but
  * fully *watchable* match — the only way to screenshot a K.O. or a win/lose
- * tableau without sitting through ninety seconds of real-time debate.
+ * tableau without sitting through a full-length real-time debate (`ROUND_SECONDS`
+ * is 99 arcade seconds, and `CLOCK_RATE` stretches that to ~132 real ones).
  */
 const DRAW = QUERY.get('draw') === '1';
 

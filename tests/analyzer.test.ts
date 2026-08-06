@@ -43,6 +43,35 @@ describe('analyze', () => {
     expect(analyze('I agree, but that only holds under low load.', ctx).kind).toBe('PARRY');
   });
 
+  // §3's `Pivot > Undercut` needs UNDERCUT to be a move a message can actually be,
+  // not only a stance the player picks.
+  it('maps a direct attack on the argument to UNDERCUT', () => {
+    for (const text of [
+      'That overhead argument ignores managed control planes entirely.',
+      "That's wrong — the flaw in that reasoning is the sample size.",
+      'Your whole case falls apart once the cache is warm.',
+      'That claim misses the point of the original benchmark.'
+    ]) {
+      expect(analyze(text, ctx).kind, text).toBe('UNDERCUT');
+    }
+  });
+
+  it('lets evidence still outrank a rebuttal', () => {
+    // A cited rebuttal is a CRIT — evidence outranks framing everywhere in the table.
+    expect(analyze('That is wrong: latency dropped 43% over 2000 requests.', ctx).kind).toBe('CRIT');
+  });
+
+  it('does not read a plain short negation as UNDERCUT', () => {
+    expect(analyze('No. That is a scaling myth.', ctx).kind).toBe('JAB');
+  });
+
+  it('lets "I agree, but" still parry even when it rebuts', () => {
+    // Precedence guard: the bundled microservices transcript has exactly this shape
+    // ("I agree, but a page a human ignores is not observability…").
+    const m = analyze('I agree, but a page a human ignores is not observability, it is noise.', ctx);
+    expect(m.kind).toBe('PARRY');
+  });
+
   it('maps plain concession to WHIFF with self damage', () => {
     const m = analyze('You are right. I concede that.', ctx);
     expect(m.kind).toBe('WHIFF');

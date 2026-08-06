@@ -12,15 +12,30 @@
  * out of order.
  */
 
+import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { MatchSession, type MatchSessionOptions } from './session';
 
 export interface StartServerOptions extends MatchSessionOptions {
   port?: number;
-  /** Called once the server is actually listening, with the port it bound to —
-   * useful when `port` is `0` (OS-assigned), which is how the tests and the
-   * behavioural verification run avoid colliding on a fixed port. */
-  onListening?: (port: number) => void;
+  /**
+   * Per-match join token. Every request must present it, as `?token=<t>` or as an
+   * `Authorization: Bearer <t>` header; anything else gets a 401.
+   *
+   * Omitted (the normal case) means one is generated per server start and handed
+   * to `onListening` — so a server is **never** unauthenticated by accident. This
+   * is deliberately the smallest thing that stops an unexpected *caller*, not an
+   * auth system: no accounts, no persistence, no expiry. It dies with the process,
+   * exactly like the match it guards. TLS is still a separate, unsolved gap (the
+   * token crosses the wire in the clear), so this raises the bar for a friend
+   * match on a shared network — it does not make the port safe to expose publicly.
+   */
+  token?: string;
+  /** Called once the server is actually listening, with the port it bound to and
+   * the match token callers need to present — useful when `port` is `0`
+   * (OS-assigned), which is how the tests and the behavioural verification run
+   * avoid colliding on a fixed port. */
+  onListening?: (port: number, token: string) => void;
   /** Called once, the turn after the match ends — the caller decides whether to
    * keep the process (and any spectators) around or shut down. */
   onMatchOver?: (session: MatchSession) => void;
@@ -55,8 +70,23 @@ function readJSONBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
+/** The token a caller presented, from either accepted place. `?token=` keeps the
+ * whole thing pasteable as one URL (which is how `--serve` prints it and how the
+ * SSE stream carries it); the `Authorization` header is the tidier option for a
+ * curl or agent-session caller that would rather keep it out of a URL. */
+function presentedToken(req: IncomingMessage, url: URL): string | null {
+  const fromQuery = url.searchParams.get('token');
+  if (fromQuery) return fromQuery;
+  const header = req.headers.authorization;
+  if (header?.startsWith('Bearer ')) return header.slice('Bearer '.length).trim() || null;
+  return null;
+}
+
 export function startServer(options: StartServerOptions = {}): Server {
   const session = new MatchSession(options);
+  // Generated when the caller didn't pin one, so there is no code path that
+  // starts an unauthenticated server.
+  const token = options.token ?? randomBytes(16).toString('hex');
   // Every open SSE connection — spectators, players, a reconnecting client after a
   // drop. A second (or third, fourth...) client connecting just adds another entry
   // here; nothing about accepting a new stream depends on how many are already open.
@@ -68,6 +98,15 @@ export function startServer(options: StartServerOptions = {}): Server {
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
+
+    // One gate in front of every route, before any of them can read match state
+    // or submit a turn. `/state` is behind it too: it returns the full transcript
+    // and event history, so leaving it open would hand an unexpected caller the
+    // whole fight even if it could not write to it.
+    if (presentedToken(req, url) !== token) {
+      respondJSON(res, 401, { error: 'missing or invalid match token' });
+      return;
+    }
 
     if (req.method === 'GET' && url.pathname === '/stream') {
       res.writeHead(200, {
@@ -127,7 +166,7 @@ export function startServer(options: StartServerOptions = {}): Server {
   server.listen(options.port ?? 0, () => {
     const address = server.address();
     const port = typeof address === 'object' && address ? address.port : (options.port ?? 0);
-    options.onListening?.(port);
+    options.onListening?.(port, token);
   });
 
   return server;

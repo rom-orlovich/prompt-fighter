@@ -27,7 +27,8 @@ No API key, no account, no backend. The demo ships with recorded debates and pla
 |---|---|
 | Short, sharp reply | `JAB` — fast, low damage, safe |
 | Long detailed reply | `HEAVY` — big damage, long recovery, **punishable** |
-| "I agree, but…" | `PARRY` into a counter |
+| "I agree, but…" | `PARRY` — kills their momentum and comes back as a counter |
+| Goes after the flaw in their argument | `UNDERCUT` — strong, unless they `Pivot` |
 | Cites evidence (a stat, a code block, a link) | `CRITICAL` — double damage |
 | Hedges ("maybe", "it depends", "not sure") | `GUARD` — chip damage only |
 | Ends on a question | `GRAPPLE` — forces a reply, opens a combo |
@@ -82,13 +83,23 @@ recorded transcript for live models means implementing one interface — `MatchS
 and changing nothing else.
 
 ```bash
-npm test        # 39 tests over the analyzer, combat resolver and match state machine
+npm test        # 186 tests over the analyzer, combat resolver, match state machine,
+                # brains, roster data and the live-mode server
 npm run build
 ```
 
-Every fighter is procedural geometry and every sound is synthesized at runtime. There are
-no art or audio assets in this repository, which is why the clone is small and the license
-is uncomplicated.
+There is also an end-to-end suite (`npm run test:e2e`) that drives the real game in a
+browser. Five of its eighteen specs need a real GPU and deliberately skip themselves under a
+software rasteriser rather than assert something weaker, so a run on a GPU-less machine
+reports 13 passed / 5 skipped.
+
+Every sound is synthesized at runtime, and the arena, HUD and effects are all Three.js
+primitives and DOM — no audio files, no particle library, no post-processing stack. The
+fighters themselves are **real CC0 low-poly character models** (`public/assets/characters/`,
+loaded with `GLTFLoader` and animated with `AnimationMixer`); they were procedural geometry
+early on, and this line said so for a while after that stopped being true. The asset policy
+is scoped rather than asset-free: CC0 only, nothing proprietary or attribution-required,
+which is what keeps the clone small and the license uncomplicated.
 
 ## Live mode
 
@@ -117,9 +128,23 @@ npm run fight
 # Networked: one process holds the authoritative match, two more connect as p1/p2 and
 # exchange turns through it over SSE + POST.
 npm run fight -- --serve --port 8991
-npm run fight -- --connect http://127.0.0.1:8991 --side p1   # separate terminal
-npm run fight -- --connect http://127.0.0.1:8991 --side p2   # separate terminal
 ```
+
+`--serve` prints the two client commands with a per-run **match token** already embedded —
+copy them as-is:
+
+```bash
+npm run fight -- --connect "http://127.0.0.1:8991?token=<printed>" --side p1   # separate terminal
+npm run fight -- --connect "http://127.0.0.1:8991?token=<printed>" --side p2   # separate terminal
+```
+
+The token is generated fresh on every `--serve` and required by `/state`, `/stream` and
+`/turn` alike (as `?token=` or `Authorization: Bearer`); without it the server answers `401`,
+so a stranger who can reach the port cannot read the match or submit turns as either side.
+`--token` pins or overrides it. Keep the URL quoted — `?` is a shell glob character. Traffic
+is still plain HTTP, so this is meant for a match with a friend on a network you trust, not
+for exposing the port publicly. A purely local match (`npm run fight` with no `--serve`) has
+no server, no network and no token — it is unchanged.
 
 By default every fighter uses the **local brain** — deterministic, no key, no network,
 derived from the running match context (see `src/brains/local.ts`). Set

@@ -4,7 +4,11 @@
  *
  *   npm run fight                                          local full match, no args
  *   npm run fight -- --serve [--port N]                    starts the authoritative server
- *   npm run fight -- --connect http://host:port --side p1  a remote client for one side
+ *   npm run fight -- --connect "http://host:port?token=T" --side p1   a client for one side
+ *
+ * `--serve` mints a per-run match token and prints the connect URL with it already
+ * embedded, so joining stays one copy-paste; `--token` pins or overrides it. A local
+ * match (the first form) is unchanged — no server, no network, no token.
  *
  * All three reuse the same engine, brains and formatting — this file is wiring only.
  */
@@ -32,6 +36,7 @@ const { values } = parseArgs({
     p2: { type: 'string', default: 'CODEX' },
     topic: { type: 'string', default: DEFAULT_TOPIC },
     brain: { type: 'string', default: 'local' },
+    token: { type: 'string' },
     'p1-brain': { type: 'string' },
     'p2-brain': { type: 'string' },
     'max-turns': { type: 'string' }
@@ -110,13 +115,19 @@ function runServeMode(): void {
 
   startServer({
     port: Number(values.port),
+    token: values.token,
     p1Name: names.p1,
     p2Name: names.p2,
     topic: values.topic,
-    onListening: (port) => {
+    onListening: (port, token) => {
+      // The connect URL carries the token, so joining stays one copy-paste with no
+      // extra step. Quoted because `?` is a glob character in bash/zsh — an
+      // unquoted URL would fail to expand before the CLI ever saw it.
+      const connect = `"http://127.0.0.1:${port}?token=${token}"`;
       console.log(`listening on http://127.0.0.1:${port}`);
-      console.log(`  clients: npm run fight -- --connect http://127.0.0.1:${port} --side p1`);
-      console.log(`           npm run fight -- --connect http://127.0.0.1:${port} --side p2`);
+      console.log(`  match token: ${token}`);
+      console.log(`  clients: npm run fight -- --connect ${connect} --side p1`);
+      console.log(`           npm run fight -- --connect ${connect} --side p2`);
     },
     onMatchOver: (session) => {
       const winnerSide = session.engine.state.p1.roundsWon > session.engine.state.p2.roundsWon ? 'p1' : 'p2';
@@ -137,7 +148,7 @@ async function runConnectMode(): Promise<void> {
   }
   const brain = createBrain(asBrainKind(values.brain, 'local'));
   console.log(`connecting to ${values.connect} as ${side} (brain: ${brain.kind})`);
-  await runRemoteClient({ url: values.connect!, side, brain });
+  await runRemoteClient({ url: values.connect!, side, brain, token: values.token });
   process.exitCode = 0;
 }
 

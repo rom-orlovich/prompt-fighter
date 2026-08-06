@@ -13,6 +13,12 @@ export type MoveKind =
   | 'HEAVY'
   | 'CRIT'
   | 'PARRY'
+  /** A message that attacks the flaw in the opponent's argument — the incoming
+   * move `PIVOT` beats in the design spec's §3 rock-paper-scissors core. It is
+   * deliberately the same word as the `UNDERCUT` *player action*: the action is
+   * the instruction ("find the flaw in their argument"), this is what a message
+   * written under that instruction reads as when it comes back the other way. */
+  | 'UNDERCUT'
   | 'GUARD'
   | 'GRAPPLE'
   | 'WHIFF'
