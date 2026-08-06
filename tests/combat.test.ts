@@ -150,6 +150,24 @@ describe('resolve', () => {
       expect(s.p2.combo).toBe(0);
     });
 
+    it('emits a comboBreak on the undercutter so the pivot plays a visible dodge', () => {
+      // `main.ts` drives the defender's dodge animation off `comboBreak`, never off
+      // a bare `whiff` — so when the undercutter has a live chain, the evade must
+      // fire the comboBreak (by the attacker whose chain just died) too, mirroring
+      // the PARRY -> COUNTER branch. A thread-continuing UNDERCUT builds combo to 1
+      // this turn, which the pivot then breaks.
+      const s = newMatch();
+      const evts = resolve({
+        attacker: 'p2',
+        intent: undercut({ continuesThread: true }),
+        playerAction: 'PIVOT',
+        state: s
+      });
+      expect(evts.some((e) => e.type === 'comboBreak' && e.by === 'p2')).toBe(true);
+      expect(evts.some((e) => e.type === 'whiff' && e.by === 'p2')).toBe(true);
+      expect(s.p2.combo).toBe(0);
+    });
+
     it('is strictly better than pivoting into anything else', () => {
       const vsUndercut = newMatch();
       resolve({ attacker: 'p2', intent: undercut(), playerAction: 'PIVOT', state: vsUndercut });

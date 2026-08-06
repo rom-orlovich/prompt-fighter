@@ -37,6 +37,15 @@ export interface SimulateResult {
 const DEFAULT_MAX_TURN_MULTIPLE = 20;
 
 export function simulateTranscript(transcript: Transcript, options: SimulateOptions = {}): SimulateResult {
+  // An empty transcript is malformed input, not a match: there is nothing to
+  // simulate. Without this guard `maxTurns` computed to 0, the turn loop was
+  // skipped, and the timeout-guard loop ran its full 10 rounds without ever
+  // deciding a winner — returning a non-terminal `matchOver: false` result (a
+  // fight that "ended" with nothing having happened) instead of failing fast.
+  if (transcript.turns.length === 0) {
+    throw new Error('cannot simulate an empty transcript (zero turns)');
+  }
+
   const playerSide = options.playerSide ?? 'p1';
   const p1Name = options.p1Name ?? transcript.p1;
   const p2Name = options.p2Name ?? transcript.p2;

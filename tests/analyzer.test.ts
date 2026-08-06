@@ -112,4 +112,24 @@ describe('analyze', () => {
   it('always produces a human-readable label', () => {
     expect(analyze('No.', ctx).label.length).toBeGreaterThan(0);
   });
+
+  describe('empty / near-empty input is never an offensive move', () => {
+    const OFFENSIVE = new Set(['JAB', 'STRIKE', 'HEAVY', 'CRIT', 'GRAPPLE', 'UNDERCUT', 'PARRY']);
+
+    // Each of these used to slip through to an attack: '' and '   ' -> JAB (power 6),
+    // '!!! ???' -> GRAPPLE (power 7, off a lone trailing '?').
+    for (const text of ['', '   ', '\n\t ', '!!! ???', '...', '???']) {
+      it(`resolves ${JSON.stringify(text)} to a no-op WHIFF, not an attack`, () => {
+        const m = analyze(text, ctx);
+        expect(m.kind).toBe('WHIFF');
+        expect(OFFENSIVE.has(m.kind)).toBe(false);
+        expect(m.power).toBe(0);
+        expect(m.selfDamage).toBe(0);
+      });
+    }
+
+    it('still classifies the shortest real content as a real move (guard is not over-broad)', () => {
+      expect(analyze('No.', ctx).kind).toBe('JAB');
+    });
+  });
 });

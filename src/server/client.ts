@@ -56,6 +56,11 @@ export interface RunRemoteClientOptions {
   /** Overrides a token embedded in `url`. */
   token?: string;
   log?: (line: string) => void;
+  /** If no SSE data (a turn broadcast OR a server heartbeat) arrives within this
+   * many ms, the connection is presumed dropped and the client errors out rather
+   * than blocking forever. Must stay larger than the server's `heartbeatMs` so a
+   * warm connection never trips it. Default 25s. */
+  idleTimeoutMs?: number;
 }
 
 export async function runRemoteClient(options: RunRemoteClientOptions): Promise<void> {
@@ -87,19 +92,43 @@ export async function runRemoteClient(options: RunRemoteClientOptions): Promise<
 
   const controller = new AbortController();
   const gate = new Gate();
+  const idleTimeoutMs = options.idleTimeoutMs ?? 25_000;
 
-  // Caught immediately (not just where it's later awaited): the server closing the
-  // connection when the match ends can reject this before the main loop gets back
-  // around to it, and an unattached rejection at that point would surface as an
-  // unhandled-rejection warning even though it is expected, routine shutdown.
-  const streamDone = streamSSE(url, auth, controller.signal, (snapshot) => {
+  // Set the moment the SSE stream ends or errors while the match is still going and
+  // we did not shut it down ourselves — i.e. the server dropped. The main loop below
+  // checks this so a dropped connection makes the client exit with an error instead
+  // of blocking forever on a `gate.wait()` that would never be notified again (the
+  // root cause behind "a networked match sometimes stalls" — a dropped stream used
+  // to only log, never unblock the submit loop).
+  let connectionLost = false;
+  let lostReason = '';
+  const markLost = (reason: string) => {
+    if (!connectionLost && !controller.signal.aborted && !client.matchOver) {
+      connectionLost = true;
+      lostReason = reason;
+    }
+    // Always release a pending wait so the loop re-evaluates and exits, rather than
+    // hanging on a gate that has no one left to notify it.
+    gate.notify();
+  };
+
+  const streamDone = streamSSE(url, auth, controller.signal, idleTimeoutMs, (snapshot) => {
     client.apply(snapshot, log);
     gate.notify();
-  }).catch((err) => {
-    if (!controller.signal.aborted) log(`  (stream error: ${(err as Error).message})`);
-  });
+  })
+    .then(() => {
+      // Resolved without error: the server closed the stream. If the match is not
+      // actually over, that is a mid-match drop, not the routine end-of-match close.
+      markLost('server closed the connection');
+    })
+    .catch((err) => {
+      // Caught here (not just where it's later awaited) so an expected end-of-match
+      // rejection never surfaces as an unhandled-rejection warning.
+      if (!controller.signal.aborted) log(`  (stream error: ${(err as Error).message})`);
+      markLost((err as Error).message);
+    });
 
-  while (!client.matchOver) {
+  while (!client.matchOver && !connectionLost) {
     if (client.nextSpeaker === side) {
       const ctx: BrainContext = {
         speaker: side,
@@ -111,12 +140,17 @@ export async function runRemoteClient(options: RunRemoteClientOptions): Promise<
         lastOwnText: client.lastText[side]
       };
       const text = await brain.nextMessage(ctx);
+      if (connectionLost) break;
       const res = await fetch(`${url}/turn`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...auth },
         body: JSON.stringify({ speaker: side, text })
+      }).catch((err: unknown) => {
+        // A dropped server also fails the POST itself — treat it the same way.
+        markLost((err as Error).message);
+        return undefined;
       });
-      if (!res.ok) {
+      if (res && !res.ok) {
         // Someone else beat us to this turn (a stale retry, a race at match start) —
         // the server already broadcast the real outcome over SSE, so just log and
         // let the gate below pick up the corrected state rather than retrying blind.
@@ -124,11 +158,21 @@ export async function runRemoteClient(options: RunRemoteClientOptions): Promise<
         log(`  (turn submission rejected: ${(body as { error?: string }).error ?? res.statusText})`);
       }
     }
-    if (!client.matchOver) await gate.wait();
+    if (!client.matchOver && !connectionLost) await gate.wait();
   }
 
   controller.abort();
   await streamDone;
+
+  if (connectionLost && !client.matchOver) {
+    // Bounded, explicit failure — `fight.ts`'s `main().catch` turns this into a
+    // "live mode failed: …" line and a non-zero exit, instead of a silent hang.
+    throw new Error(
+      `lost connection to the match server (${lostReason}) — it may have stopped, ` +
+        'or the network dropped'
+    );
+  }
+
   log(
     client.winner
       ? `\nFINAL: ${names[client.winner]} wins the match!`
@@ -200,6 +244,7 @@ async function streamSSE(
   url: string,
   auth: Record<string, string>,
   signal: AbortSignal,
+  idleTimeoutMs: number,
   onMessage: (snapshot: SessionSnapshot) => void
 ): Promise<void> {
   const res = await fetch(`${url}/stream`, {
@@ -213,7 +258,7 @@ async function streamSSE(
   let buffer = '';
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithIdleTimeout(reader, idleTimeoutMs);
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       let idx: number;
@@ -227,5 +272,33 @@ async function streamSSE(
   } catch (err) {
     if (signal.aborted) return;
     throw err;
+  }
+}
+
+/** One `reader.read()`, but rejected if it takes longer than `ms` — the server's
+ * heartbeat guarantees a warm connection produces bytes well inside this window, so
+ * exceeding it means the stream has silently gone dead (a half-open socket a plain
+ * `read()` would wait on for the OS TCP timeout, minutes later, or never). */
+async function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  ms: number
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  const readPromise = reader.read();
+  // If the timeout wins the race, this read is abandoned; swallow its eventual
+  // settlement so it never surfaces as an unhandled rejection once the caller's
+  // AbortController cancels the body.
+  readPromise.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`no data from the server for ${ms}ms — connection presumed dropped`)),
+      ms
+    );
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([readPromise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

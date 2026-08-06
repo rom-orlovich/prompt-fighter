@@ -46,9 +46,30 @@ function count(text: string, re: RegExp): number {
   return (text.match(re) ?? []).length;
 }
 
+/** Any Latin letter, digit or Hebrew letter — the same content characters
+ * `text.ts`'s `words()` keeps. A message with none of these is punctuation,
+ * whitespace or empty: it said nothing, so it is not an argument at all. */
+const HAS_CONTENT = /[a-z0-9֐-׿]/i;
+
 export function analyze(text: string, ctx: AnalyzeContext = {}): MoveIntent {
   const tags: MoveTag[] = [];
   const length = rawWordCount(text);
+
+  // Empty / whitespace-only / punctuation-only input is not an offensive move —
+  // without this guard `""` fell through to JAB (power 6) and `"!!! ???"` to
+  // GRAPPLE (power 7), letting a blank submission land a real hit. It lands as a
+  // no-op WHIFF instead: no damage dealt, none taken, no meter, no combo.
+  if (text.trim() === '' || !HAS_CONTENT.test(text)) {
+    return {
+      kind: 'WHIFF',
+      power: 0,
+      tags: [],
+      continuesThread: false,
+      meterGain: 0,
+      selfDamage: 0,
+      label: 'SAID NOTHING'
+    };
+  }
 
   const hedges = count(text, HEDGE);
   const asserts = count(text, ASSERT);

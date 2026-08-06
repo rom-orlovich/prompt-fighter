@@ -10,8 +10,11 @@
  *
  * The rotation below is deliberately built so each slot lands on a different
  * `analyzer.ts` branch (JAB, CRIT, GUARD, GRAPPLE, PARRY, WHIFF, honest-correction
- * GUARD, HEAVY, STRIKE, SELF_HIT) — a full local-vs-local match exercises the whole
- * move set, not just one repeated line.
+ * GUARD, HEAVY, STRIKE, UNDERCUT, SELF_HIT) — a full local-vs-local match exercises
+ * the whole move set, not just one repeated line. The `UNDERCUT` slot is what makes
+ * `PIVOT`-beats-`UNDERCUT` (design spec §3) reachable in the shipped local/browser
+ * demo: without a line the analyzer classifies as `UNDERCUT`, a player could never
+ * see the pivot evade in normal play against this brain.
  */
 
 import type { BrainContext, FighterBrain } from './types';
@@ -40,11 +43,19 @@ const heavy: Line = (topic) =>
   'onboarding time, long-term maintenance burden, and the fact that every serious survey ' +
   'of practitioners on this exact question has landed the same way for a decade, which is ' +
   'not a coincidence, it is a signal that the argument on the other side keeps sounding ' +
-  'clever in the moment and keeps losing once anyone actually ships something with it.';
+  'clever in the moment and keeps losing once anyone ships something with it.';
 
 const strike: Line = (topic) =>
-  `Every serious team that has actually shipped under "${topic}" pressure converges on the ` +
+  `Every serious team that has shipped under "${topic}" pressure converges on the ` +
   'same answer once the deadline gets real, and that convergence is the argument.';
+
+// A direct rebuttal the analyzer classifies as UNDERCUT (see its `UNDERCUT`
+// regex): "that's just wrong" and "you're ignoring" both match. Deliberately
+// carries no evidence/question/concession/self-correction phrasing that would
+// outrank UNDERCUT in the analyzer's precedence — so this slot reliably lands on
+// UNDERCUT, making PIVOT-beats-UNDERCUT observable in the default local demo.
+const undercut: Line = () =>
+  "That's just wrong — you're ignoring the one flaw that makes the whole case fall apart.";
 
 /** Marker line used only to detect the loop slot below — never shown as-is. */
 const LOOP_SLOT = Symbol('loop');
@@ -59,6 +70,7 @@ const ROTATION: (Line | typeof LOOP_SLOT)[] = [
   honestCorrection,
   heavy,
   strike,
+  undercut,
   LOOP_SLOT
 ];
 

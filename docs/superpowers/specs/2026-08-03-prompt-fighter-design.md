@@ -71,7 +71,7 @@ When the meter fills, a model unleashes a signature move tied to its persona:
 
 | Model | Super |
 |---|---|
-| Claude | *Constitutional Barrier* (shield) · *"Actually, Let Me Reconsider"* (heal + counter) |
+| Claude | *Constitutional Barrier* (shield + heal) · *Nuance Riposte* (heal) |
 | GPT / Codex | *Confident Fabrication* — huge damage, catastrophic whiff if unsupported |
 | Gemini | *Context Window Slam* — wide-area attack |
 | Local 7B | *Fast Inference* — flurry of quick, shallow jabs |
@@ -125,7 +125,7 @@ src/
   brains/          # FighterBrain: local.ts (deterministic, no key) · openrouter.ts (real models)
   render/          # dumb consumer of CombatEvent
     scene.ts       # Three.js scene, camera, arena, lights
-    fighter.ts     # procedural low-poly rig + keyframe pose animation
+    fighter.ts     # GLTFLoader-loaded CC0 character rig + AnimationMixer pose clips
     fx.ts          # hitstop, screen shake, particles, damage numbers
     hud.ts         # DOM overlay: bars, combo, meter, subtitles, action picker
   cli/             # `npm run fight` — headless local match, or --serve / --connect
@@ -289,8 +289,9 @@ Dark void, neon grid floor with reflection, volumetric spotlights, Tekken-style 
 
 Each fighter is a **real CC0 low-poly humanoid model** with realistic (~7-head) proportions,
 loaded via `GLTFLoader` and animated at runtime with `AnimationMixer` against a genuine
-unarmed-combat clip set: guard-up stance, jab, cross, two hit reactions and a K.O. All four
-fighters share one rig. The body's own skin/costume texture is what the mesh reads as (G23 —
+unarmed-combat clip set of 15 shared pose clips (idle and guard stances, jab, cross, hook,
+hit reactions, a slide, a jump and a K.O.), trimmed and merged from two CC0 animation
+libraries (G17/G20a — see the roster spec). All four fighters share one rig. The body's own skin/costume texture is what the mesh reads as (G23 —
 see below); brand identity comes from a fresnel rim glow, a ground glow, a recoloured
 trunks/briefs accent baked into that same texture, and per-fighter hair/height/build, not from
 painting the whole body a flat brand hue.
@@ -437,12 +438,13 @@ It is a judgment about the fight's overall presentation and feel, not a list of 
 is **not met.**
 
 One factual note that helps scope it later, drawn from §5 itself rather than added as a theory:
-the shipped animation vocabulary is a guard-up stance, a jab, a cross, two hit reactions and a
-K.O. — six clips, all shared across one rig. The engine's move set (`JAB` · `HEAVY` · `PARRY` →
-`COUNTER` · `CRIT` · `GUARD` · `GRAPPLE` · supers, plus a combo counter, §2) is considerably
-richer than the animation set that has to express it, so a combo currently reads as a number on
-the HUD rather than as a sequence of distinct strikes connecting. That is a description of the
-current state, not a prescribed fix.
+the shipped animation vocabulary is 15 pose clips — idle and guard stances, jab, cross, hook,
+hit reactions, a slide, a jump and a K.O. — all shared across one rig (expanded from the
+original six by G17/G20a). The engine's move set (`JAB` · `HEAVY` · `PARRY` →
+`COUNTER` · `CRIT` · `GUARD` · `GRAPPLE` · supers, plus a combo counter, §2) is still richer
+than the animation set that has to express it, but a combo now reads as a sequence of distinct
+strikes advancing by chain position (G18), not merely as a number on the HUD. That is a
+description of the current state, not a prescribed fix.
 
 **No solution is proposed here, deliberately.** This is a large, subjective, visual undertaking
 — animation vocabulary, movement/spacing, hit reactions, camera, and what "real graphics" should

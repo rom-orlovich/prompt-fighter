@@ -186,6 +186,16 @@ export function resolve(input: ResolveInput): CombatEvent[] {
         // never evaded.
         if (intent.kind === 'UNDERCUT' && !isSuper) {
           countered = true;
+          // Break the undercutter's combo *visibly*: `main.ts` drives the
+          // defender's dodge animation off a `comboBreak` event (never off a
+          // bare `whiff`), so without this the pivot evaded with no on-screen
+          // reaction shot. Mirrors the PARRY -> COUNTER branch below, which
+          // guards the same `combo > 0` before emitting. `by: attacker` because
+          // it is the attacker's chain that just died — and `main.ts` plays the
+          // dodge on the *opposite* side (the pivoting defender), exactly right.
+          if (atk.combo > 0) {
+            events.push({ type: 'comboBreak', by: attacker });
+          }
           atk.combo = 0;
           damage = 0;
           events.push({ type: 'whiff', by: attacker });

@@ -39,6 +39,11 @@ export interface StartServerOptions extends MatchSessionOptions {
   /** Called once, the turn after the match ends — the caller decides whether to
    * keep the process (and any spectators) around or shut down. */
   onMatchOver?: (session: MatchSession) => void;
+  /** How often (ms) each open SSE stream gets a heartbeat comment. This is what
+   * lets a connected client tell "server still here, opponent is just thinking"
+   * apart from "server gone" — see `client.ts`'s idle-timeout watchdog, whose
+   * window must stay comfortably larger than this. Default 8s. */
+  heartbeatMs?: number;
 }
 
 function sseWrite(res: ServerResponse, payload: unknown): void {
@@ -118,9 +123,21 @@ export function startServer(options: StartServerOptions = {}): Server {
       // mid-match drop — catches up from `hello` alone, no separate backfill call.
       sseWrite(res, session.hello());
       clients.add(res);
+      // Heartbeat: a periodic SSE comment (`:`-prefixed — ignored by every SSE
+      // parser, including our client's) keeps the stream warm and, crucially, gives
+      // the client a positive "still alive" signal. Without it, a client blocked
+      // waiting for a slow opponent's turn could not distinguish that from a dead
+      // server. `.unref()` so it never keeps the process alive on its own. First
+      // tick is at +heartbeatMs, so the synchronous `hello` above is always the
+      // first thing a client reads.
+      const heartbeat = setInterval(() => {
+        if (!res.writableEnded) res.write(': ping\n\n');
+      }, options.heartbeatMs ?? 8_000);
+      heartbeat.unref();
       req.on('close', () => {
         // A client disconnecting mid-match just stops receiving broadcasts; the
         // match keeps running and waits for its next turn like any other silence.
+        clearInterval(heartbeat);
         clients.delete(res);
       });
       return;
