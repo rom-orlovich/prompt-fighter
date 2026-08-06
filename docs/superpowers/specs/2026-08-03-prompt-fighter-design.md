@@ -195,18 +195,47 @@ are **planned, not built.** `FighterBrain` (`nextMessage(ctx) -> Promise<string>
 the correct seam for the wrapper form — an agent-backed brain is a third implementation of an
 interface the engine, source contract and renderer are all already blind to.
 
-#### (c) Local, window-vs-window (explicit requirement)
+#### (c) Window-vs-window — local *and* remote (explicit requirement)
 
-Two real agent sessions must be able to run in **two separate terminal windows on the same
-machine** and fight each other, both `--connect`ed to a `--serve` process on `localhost`. No
-cloud, no hosted matchmaking — the loopback case is the primary case, not a fallback.
+> **Scope correction (2026-08-06).** This section previously read *"No cloud, no hosted
+> matchmaking — the loopback case is the primary case, not a fallback"*, i.e. local-only.
+> That was wrong. Both cases are required.
 
-Structurally this already works: two separate `--connect` client *processes* playing one
-server-held match to completion is exactly what ships today and what
+Each real agent session drives the fighter it picked through the CLI, and **both of these are
+in scope**:
+
+- **Local (same machine, two windows).** Two agent sessions in two separate terminal windows
+  on one machine, both `--connect`ed to a `--serve` process on `127.0.0.1`. This stays the
+  simplest, zero-network-setup case — nothing to configure, nothing to expose — and it is the
+  one to make work first.
+- **Remote (against a friend, over the network).** Two agent sessions on *different* machines,
+  both `--connect`ed to one `--serve` process reachable at a real address. Same command, same
+  API, just `--connect http://<host>:<port>` instead of `http://127.0.0.1:<port>`.
+
+Remote is not a second transport and needs no new capability: nothing about `GET /state`,
+`GET /stream` or `POST /turn` is loopback-specific. `--connect` already takes a full base URL
+(`fight.ts` documents `--connect http://host:port`), and `--serve` already calls
+`server.listen(port)` with no host argument, so it binds every interface rather than loopback
+only — the only loopback-flavoured thing in the code today is the `127.0.0.1` hint the serve
+command prints. Remote play is the same server and client code at a different address.
+
+Structurally the two-process shape already works: two separate `--connect` client *processes*
+playing one server-held match to completion is exactly what ships today and what
 `tests/live-mode-parity.test.ts` proves resolves identically to calling the engine directly.
-The only gap is (b) — today both of those processes are driven by a scripted brain, so the
-plumbing for "two windows, one fight" is proven while neither side is yet a real reasoning
-agent.
+The gap is still (b) — today both processes are driven by a scripted brain, so the plumbing
+for "two windows, one fight" is proven while neither side is yet a real reasoning agent.
+
+**Open items for the remote case** (not solved here — flagged honestly, not designed):
+
+- **No authentication on the connect API.** Any client that can reach the port can `GET /state`
+  and `POST /turn` as either side; the server only rejects out-of-order or post-KO turns, never
+  an unexpected *caller*. Fine on loopback, unresolved once the port is reachable by anyone else.
+- **No TLS.** `--connect` is plain HTTP, so a remote match's traffic is unencrypted in transit.
+- **Reachability is unspecified.** Exposing `--serve` to a friend means a public address, port
+  forwarding, or a tunnel/VPN; the spec picks none of these and the CLI helps with none of them.
+
+These need answering before remote play is offered to anyone beyond a trusted LAN — they are
+listed as known gaps, not as a design.
 
 ### Turn data flow
 
