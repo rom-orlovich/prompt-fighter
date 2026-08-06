@@ -7,7 +7,9 @@
 
 ## 1. Concept
 
-A 3D arcade fighting game where each fighter is a live AI model session. The models hold a
+A 3D arcade fighting game where each fighter is a live AI model session. *(Concept, not current
+state: today's fighters are scripted or single-API-call brains — a real agent session driving a
+fighter is specified but not built. See §4b.)* The models hold a
 conversation (a debate on a topic), and every message one of them sends **is a move**. The
 rhetorical properties of the message — its length, confidence, evidence, whether it concedes
 or pivots — determine which attack is thrown, how much damage it deals, and whether it can be
@@ -115,7 +117,17 @@ server/            # live mode's authoritative match (node:http, SSE + POST /tur
 transcripts/       # bundled demo fights (JSON)
 ```
 
-### Live mode (implemented)
+### Live mode — transport built, real-agent brains not
+
+> **Status correction (2026-08-06).** This section was previously headed *"Live mode
+> (implemented)"*. That heading was accurate about the **transport** (the server, the
+> `--connect` HTTP/SSE API, the CLI) and about the two **scripted / API brains** shipped
+> behind it — and inaccurate about what "two live AI models fighting" (§1) was supposed to
+> mean. A `FighterBrain` that runs a canned local script, or that makes one HTTP call to a
+> completions endpoint, is not a real model *session* playing the game. Splitting the two
+> halves apart below, so the built part and the missing part stop being read as one thing.
+
+#### (a) Built today — scripted / API brains (CURRENT STATE)
 
 Two deliverables sit behind the `MatchSource`/`FighterBrain` seams above, both reusing
 `engine/` unchanged: `npm run fight` (a full local match in a terminal, driven by
@@ -130,6 +142,55 @@ with an actionable error, never a stack trace, when it isn't. The CLI's turn loo
 (`cli/runner.ts`) reuses `simulate.ts`'s own two-tier termination strategy — a generous
 turn cap, then a timeout-guard loop that forces round decisions by credibility — so a
 live match can never spin forever. See the README's "Live mode" section for usage.
+
+Both shipped brains are **scripted or single-call**: `local.ts` decides its message from a
+deterministic table, and `openrouter.ts` sends one completions request per turn. Neither is a
+live agent *session* — nothing on either side is reasoning about the argument across turns the
+way a real coding-agent session would. This is the current state, and it is the part that is
+done.
+
+#### (b) NOT YET IMPLEMENTED — real-agent brains
+
+The intended end state, and the thing "live mode" was for: **a real Claude Code / Codex /
+Gemini CLI session — an actual running coding-agent window, reasoning and writing — is p1 or
+p2.** It joins a match through the same `--connect` API that already exists, reads the match
+state, decides what to argue on the merits of the topic, and submits that as its move. No
+canned script, no one-shot completion call: the fighter *is* the agent session.
+
+Nothing about the transport needs to change for this. The pieces below already exist and are
+reusable as-is (`src/server/http.ts`, `src/server/session.ts`, `src/server/client.ts`):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /state` | Full snapshot — topic, names, `nextSpeaker`, credibility, round, full turn + event history. Enough to join late and reconstruct the whole fight. |
+| `GET /stream` | SSE broadcast — one message per resolved turn, so a joined side knows when it is on. |
+| `POST /turn` `{ speaker, text }` | Submit this side's message. The server holds the one authoritative `FightEngine`; an out-of-order or post-KO turn is rejected (`409`) rather than mis-resolved. |
+
+What is **missing** is only the connector between an agent session and those endpoints — one of:
+
+- a small CLI wrapper (`--connect --agent`, or a sibling command) that hands the live match
+  state to an agent session and posts back whatever it writes; **or**
+- a documented plain-HTTP protocol — short enough to paste into a Claude Code / Codex session
+  as its instructions — telling it how to poll `/state`, watch `/stream`, and `POST /turn`,
+  with no wrapper at all.
+
+Either satisfies the requirement; the second is cheaper and needs no new code, only docs. Both
+are **planned, not built.** `FighterBrain` (`nextMessage(ctx) -> Promise<string>`) is already
+the correct seam for the wrapper form — an agent-backed brain is a third implementation of an
+interface the engine, source contract and renderer are all already blind to.
+
+#### (c) Local, window-vs-window (explicit requirement)
+
+Two real agent sessions must be able to run in **two separate terminal windows on the same
+machine** and fight each other, both `--connect`ed to a `--serve` process on `localhost`. No
+cloud, no hosted matchmaking — the loopback case is the primary case, not a fallback.
+
+Structurally this already works: two separate `--connect` client *processes* playing one
+server-held match to completion is exactly what ships today and what
+`tests/live-mode-parity.test.ts` proves resolves identically to calling the engine directly.
+The only gap is (b) — today both of those processes are driven by a scripted brain, so the
+plumbing for "two windows, one fight" is proven while neither side is yet a real reasoning
+agent.
 
 ### Turn data flow
 
@@ -273,6 +334,33 @@ their cooler key-light tint; present but subtler on CLAUDE, whose warm key light
 hue to its own brand orange). 124 unit tests, tsc, build and the full e2e suite (18/18 headed,
 real GPU, `--workers=2`) all green.
 
+### Open gap — it does not yet feel like a real fighting game (unmet, 2026-08-06)
+
+Everything in §5 above describes work that shipped and was verified by rendering. None of it
+closes this gap, and this section exists so the spec stops implying otherwise.
+
+The operator's assessment of the current build, in his own terms: the characters must perform
+**real, realistic movement**; there must be **real graphics and real combos**; and the whole
+thing has to **feel like an actual Tekken game** — which it does not today. That is the bar.
+It is a judgment about the fight's overall presentation and feel, not a list of defects, and it
+is **not met.**
+
+One factual note that helps scope it later, drawn from §5 itself rather than added as a theory:
+the shipped animation vocabulary is a guard-up stance, a jab, a cross, two hit reactions and a
+K.O. — six clips, all shared across one rig. The engine's move set (`JAB` · `HEAVY` · `PARRY` →
+`COUNTER` · `CRIT` · `GUARD` · `GRAPPLE` · supers, plus a combo counter, §2) is considerably
+richer than the animation set that has to express it, so a combo currently reads as a number on
+the HUD rather than as a sequence of distinct strikes connecting. That is a description of the
+current state, not a prescribed fix.
+
+**No solution is proposed here, deliberately.** This is a large, subjective, visual undertaking
+— animation vocabulary, movement/spacing, hit reactions, camera, and what "real graphics" should
+mean for this project are all open questions with very different costs. It needs its own
+dedicated scoping pass first, and — following how G21 and G23 were actually settled — that pass
+should produce **rendered preview/comparison work to look at and choose from before anything is
+committed to**, not a plan written blind. Treat this as an open item awaiting that scoping, not
+as a task ready to pick up.
+
 ## 6. Testing
 
 `vitest` over `engine/`. The analyzer and combat resolver are pure functions with table-driven
@@ -290,9 +378,20 @@ no keys committed, and live mode is opt-in.
 
 **In the POC:** 3D arena and two animated fighters · replay source with demo transcripts ·
 analyzer, combat resolver and their tests · full HUD · timed player action window · hitstop,
-shake and particles · rounds and KO flow · README · public repo · **live mode** — a headless
-CLI match and a two-process networked match, both driven by a swappable local/OpenRouter
-`FighterBrain`, both reusing the POC's own engine unchanged (see §4).
+shake and particles · rounds and KO flow · README · public repo · **live mode transport** — a
+headless CLI match and a two-process networked match, both driven by a swappable
+local/OpenRouter `FighterBrain`, both reusing the POC's own engine unchanged (see §4a).
+
+**Open — required, not yet built** (these are the gap between what ships and what the game is
+supposed to be, not "nice to have"):
+
+- **Real-agent brains** — a live Claude Code / Codex / Gemini session driving a fighter through
+  the existing `--connect` API, including two such sessions in two terminal windows on one
+  machine fighting over `localhost`. Transport exists; the connector/protocol does not. See §4b
+  and §4c.
+- **Fighting-game feel** — realistic movement, real graphics and real combos, at a "real Tekken
+  game" bar. Unmet, and awaiting its own scoping pass with rendered previews before any
+  implementation. See §5's open-gap section.
 
 **Deferred:** tournament and roster meta · LLM announcer for flavor text · larger move set ·
 mobile touch controls.
