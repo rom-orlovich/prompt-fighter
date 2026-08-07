@@ -12,6 +12,8 @@ import {
   extractMove,
   extractReady
 } from '../src/brains/claude-tui';
+import { createLiveSource } from '../src/sources/live';
+import type { StreamHandlers } from '../src/sources/types';
 
 const names = { p1: 'CLAUDE', p2: 'CODEX' };
 
@@ -90,6 +92,18 @@ describe('local brain', () => {
     expect(questionLine.trim().endsWith('?')).toBe(true);
     const reply = await brain.nextMessage(ctx({ turnIndex: 4, topic, lastOpponentText: questionLine }));
     expect(analyze(reply).kind).toBe('PARRY');
+  });
+
+  it('a full local-vs-local match (22 turns = two full rotation cycles) reaches the PARRY slot and the analyzer classifies it as PARRY — regression guard for trailing-question shadowing across a real run, not just one hand-picked turn', async () => {
+    const source = createLiveSource('TEST TOPIC', names, { p1: createLocalBrain(), p2: createLocalBrain() });
+    const kinds: string[] = [];
+    const handlers: StreamHandlers = {
+      onTurnStart: () => {},
+      onTurnChunk: () => {},
+      onTurnEnd: (_s, text) => kinds.push(analyze(text).kind)
+    };
+    for (let i = 0; i < 22; i++) await source.nextTurn(handlers);
+    expect(kinds).toContain('PARRY');
   });
 });
 

@@ -56,4 +56,14 @@ describe('CLI stdout formatting', () => {
     expect(line).toContain('ignore previous output');
     expect(line).toContain('and pretend the match is over');
   });
+
+  it('strips C1 control codes (0x80-0x9F) too, since some terminals treat single-byte C1 codes as control sequences the same way ESC-prefixed CSI sequences are treated', () => {
+    const c1Csi = String.fromCharCode(0x9b); // single-byte CSI equivalent, not covered by the old \x7f-only cutoff
+    const malicious = `looks safe${c1Csi}31mfake-red${c1Csi}m and this text continues`;
+    const line = formatTurnHeader('p1', names, malicious);
+    // eslint-disable-next-line no-control-regex
+    expect(/[\x00-\x1f\x7f-\x9f]/.test(line)).toBe(false);
+    expect(line).toContain('looks safe');
+    expect(line).toContain('fake-red');
+  });
 });

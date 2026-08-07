@@ -32,7 +32,7 @@ const CODE_FENCE = /```[\s\S]*?```/;
 const URL = /https?:\/\/\S+/;
 const STAT =
   /\b\d+(\.\d+)?\s?(%|ms|s|x|mb|gb|kb|rps|qps|requests?|users?|lines?|tests?|hours?|minutes?|days?)(?![a-z])/i;
-const QUOTED = /["“][^"”]{12,}["”]/;
+const QUOTED = /["“][^"”]*\d[^"”]*["”]/;
 
 /** Above this self-similarity, the speaker is just repeating themselves. */
 const LOOP_THRESHOLD = 0.6;

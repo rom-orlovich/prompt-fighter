@@ -60,6 +60,23 @@ const undercut: Line = () =>
 /** Marker line used only to detect the loop slot below — never shown as-is. */
 const LOOP_SLOT = Symbol('loop');
 
+/**
+ * Slots whose own line must never be shadowed by the trailing-question override in
+ * `pickLine` below, even though the opponent's previous turn ended in '?'. `parry` is
+ * the only member today: its line ("You're right that it's nuanced, but...") IS the
+ * PARRY move, and the rotation slot right before it (`question`) always ends in '?',
+ * which would otherwise silently replace every PARRY turn with an `evidence` line.
+ *
+ * Named and generalizable on purpose — if the rotation is ever reordered so a
+ * different slot's own line is meant to survive a preceding question mark (a future
+ * GRAPPLE/GUARD variant, say), add it here rather than hand-rolling a second
+ * `slot !== x` check. A bare identity comparison silently stops protecting anything
+ * the moment someone inserts a new slot between `question` and `parry`; a named Set
+ * documents the invariant so that reordering is a deliberate edit to THIS set, not an
+ * accidental regression nobody notices until PARRY stops firing.
+ */
+const SHADOW_IMMUNE_SLOTS: Set<Line> = new Set([parry]);
+
 const ROTATION: (Line | typeof LOOP_SLOT)[] = [
   jab,
   evidence,
@@ -96,7 +113,8 @@ function pickLine(ctx: BrainContext): string {
   // but...") is the whole point of that rotation slot, and the turn right before it
   // (the `question` slot) always ends in '?', which would otherwise shadow PARRY
   // every single time it comes up.
-  if (slot !== parry && lastOpponentText && /\?\s*$/.test(lastOpponentText.trim())) {
+  const shadowImmune = slot !== LOOP_SLOT && SHADOW_IMMUNE_SLOTS.has(slot);
+  if (!shadowImmune && lastOpponentText && /\?\s*$/.test(lastOpponentText.trim())) {
     return evidence(topic);
   }
 

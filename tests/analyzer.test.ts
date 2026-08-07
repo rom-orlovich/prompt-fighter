@@ -150,4 +150,21 @@ describe('analyze', () => {
       });
     }
   });
+
+  describe('a bare quote of prose (no citable fact inside) does not short-circuit into CRIT', () => {
+    it("a rebuttal that merely quotes the opponent's own words classifies as UNDERCUT, not CRIT", () => {
+      const text =
+        'You said "the sample size was clearly enough for anyone" but that argument falls apart under scrutiny.';
+      const m = analyze(text, ctx);
+      expect(m.kind).toBe('UNDERCUT');
+      expect(m.tags).not.toContain('evidence');
+    });
+
+    it('a quote that itself carries a citable number still counts as evidence (CRIT)', () => {
+      const text = 'The report literally says "the 2019 baseline already proved this" — that settles it.';
+      const m = analyze(text, ctx);
+      expect(m.kind).toBe('CRIT');
+      expect(m.tags).toContain('evidence');
+    });
+  });
 });
