@@ -6,6 +6,7 @@
   },
   "scripts": {
     "test": "bash scripts/run-tests.sh",
+    "test:unit": "bash scripts/run-tests.sh",
     "test:e2e": "playwright test",
     "test:classification": "vitest run tests/classification-report.test.ts --reporter=verbose",
     "test:reachability": "bash scripts/report-reachability.sh",
