@@ -131,6 +131,22 @@ describe('per-fighter mechanics', () => {
     expect(fired.map((e) => e.effect)).toContain('selfDamage');
   });
 
+  it("LOCAL 7B's FAST INFERENCE banks its advertised +20 meter after spending the super", () => {
+    const s = newMatch('p1', 'LOCAL 7B', 'CLAUDE');
+    s.p1.meter = MAX_METER;
+    const evts = resolve({ attacker: 'p1', intent: intent(), playerAction: 'NONE', state: s });
+    expect(evts.some((e) => e.type === 'super' && e.name === 'FAST INFERENCE')).toBe(true);
+    expect(abilityEvents(evts)).toContainEqual(
+      expect.objectContaining({ ability: 'FAST_INFERENCE', effect: 'meter', amount: 20 })
+    );
+    expect(s.p1.meter).toBe(20);
+    expect(evts.filter((e) => e.type === 'meter').at(-1)).toEqual({
+      type: 'meter',
+      who: 'p1',
+      value: 20
+    });
+  });
+
   it('fires a distinctly shaped super for each fighter', () => {
     const shapes: string[] = [];
     for (const name of ROSTER) {

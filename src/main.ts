@@ -879,20 +879,15 @@ const spectateHandlers: StreamHandlers = {
   onServerSnapshot(snapshot) {
     if (!engine) return;
     // Server-authoritative (D4): every field here is a direct copy of what the
-    // server broadcast, never a value this file computed. `roundsWon` is the one
-    // exception worth calling out — `src/engine/match.ts` normally increments it
-    // as part of `completeTurn`/`endRoundOnTime`, neither of which spectate mode
-    // is allowed to call (see `spectateActive`'s doc comment) — so it is relayed
-    // here from the same `roundEnd`/`matchEnd` event's own `winner` field the
-    // server already computed, one line below, rather than recomputed.
+    // server broadcast, never a value this file computed. That includes
+    // `roundsWon`: deriving it from both `roundEnd` and `matchEnd` used to count
+    // the decisive round twice for spectators, so the authoritative score now
+    // travels in every session snapshot alongside credibility.
     engine.state.p1.credibility = snapshot.credibility.p1;
     engine.state.p2.credibility = snapshot.credibility.p2;
+    engine.state.p1.roundsWon = snapshot.roundsWon.p1;
+    engine.state.p2.roundsWon = snapshot.roundsWon.p2;
     engine.state.round = snapshot.round;
-    for (const event of snapshot.events) {
-      if ((event.type === 'roundEnd' || event.type === 'matchEnd') && event.winner) {
-        engine.state[event.winner].roundsWon += 1;
-      }
-    }
     if (snapshot.matchOver) engine.matchOver = true;
     syncBars();
     window.__pf.spectateLog.push({ at: performance.now(), kind: 'serverSnapshot' });

@@ -11,6 +11,7 @@ function snapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot {
     nextSpeaker: 'p2',
     matchOver: false,
     credibility: { p1: 100, p2: 100 },
+    roundsWon: { p1: 0, p2: 0 },
     round: 1,
     turns: [],
     events: [],
@@ -82,6 +83,7 @@ describe('SpectateReducer', () => {
         type: 'turn',
         turns: [{ speaker: 'p1', text: 'x' }],
         credibility: { p1: 62, p2: 100 },
+        roundsWon: { p1: 2, p2: 1 },
         round: 2,
         matchOver: true,
         events: [{ type: 'ko', loser: 'p2' }]
@@ -89,7 +91,13 @@ describe('SpectateReducer', () => {
       handlers
     );
     expect(received).toEqual([
-      { credibility: { p1: 62, p2: 100 }, round: 2, matchOver: true, events: [{ type: 'ko', loser: 'p2' }] }
+      {
+        credibility: { p1: 62, p2: 100 },
+        roundsWon: { p1: 2, p2: 1 },
+        round: 2,
+        matchOver: true,
+        events: [{ type: 'ko', loser: 'p2' }]
+      }
     ]);
   });
 });

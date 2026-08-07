@@ -4,7 +4,7 @@
  * same `MatchSource` / `StreamHandlers` seam `replay.ts` and `live.ts` implement —
  * the engine and renderer cannot tell a spectate feed apart from a locally driven
  * one — plus the optional `onServerSnapshot` extension point (see `types.ts`) that
- * lets a caller mirror the server's authoritative credibility/round/matchOver state
+ * lets a caller mirror the server's authoritative credibility/score/round/matchOver state
  * and combat events instead of recomputing any of the engine's own rules.
  *
  * Two pieces, deliberately separated:
@@ -67,6 +67,7 @@ export class SpectateReducer {
     handlers.onTurnChunk(turn.speaker, turn.text);
     handlers.onServerSnapshot?.({
       credibility: snapshot.credibility,
+      roundsWon: snapshot.roundsWon,
       round: snapshot.round,
       matchOver: snapshot.matchOver,
       events: snapshot.events

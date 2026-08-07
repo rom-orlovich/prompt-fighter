@@ -33,6 +33,7 @@ export interface SessionSnapshot {
   nextSpeaker: Speaker;
   matchOver: boolean;
   credibility: { p1: number; p2: number };
+  roundsWon: { p1: number; p2: number };
   round: number;
   /** Full turn history on `hello` (so a late/reconnecting client can rebuild brain
    * context and replay the fight); just this turn on `turn`. */
@@ -84,6 +85,10 @@ export class MatchSession {
     return { p1: this.engine.state.p1.credibility, p2: this.engine.state.p2.credibility };
   }
 
+  private roundsWon() {
+    return { p1: this.engine.state.p1.roundsWon, p2: this.engine.state.p2.roundsWon };
+  }
+
   hello(): SessionSnapshot {
     return {
       type: 'hello',
@@ -92,6 +97,7 @@ export class MatchSession {
       nextSpeaker: this.nextSpeaker,
       matchOver: this.matchOver,
       credibility: this.credibility(),
+      roundsWon: this.roundsWon(),
       round: this.engine.state.round,
       turns: this.turns,
       events: this.history
@@ -110,6 +116,7 @@ export class MatchSession {
       nextSpeaker: speaker,
       matchOver: this.matchOver,
       credibility: this.credibility(),
+      roundsWon: this.roundsWon(),
       round: this.engine.state.round,
       turns: [],
       events: []
@@ -124,6 +131,7 @@ export class MatchSession {
       nextSpeaker: this.nextSpeaker,
       matchOver: this.matchOver,
       credibility: this.credibility(),
+      roundsWon: this.roundsWon(),
       round: this.engine.state.round,
       turns: [{ speaker, text }],
       events

@@ -54,10 +54,14 @@ export class FightEngine {
     this.lastText[speaker] = text;
     this.playerAction = 'NONE';
 
-    const ko = events.find(
+    const kos = events.filter(
       (e): e is Extract<CombatEvent, { type: 'ko' }> => e.type === 'ko'
     );
-    if (ko) events.push(...this.awardRound(other(ko.loser)));
+    // Self-damage abilities can drop the attacker on the same exchange that
+    // drops the defender. Treat that as the draw it visibly is; choosing the
+    // first KO made double KOs resolve according to fixed p1/p2 iteration order.
+    if (kos.length > 1) events.push(...this.awardRound(null));
+    else if (kos.length === 1) events.push(...this.awardRound(other(kos[0].loser)));
 
     this.emitAll(events);
     return events;

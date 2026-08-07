@@ -121,6 +121,7 @@ describe('ClientState.apply merges a late "hello" snapshot (the late-join / reco
       nextSpeaker: 'p2',
       matchOver: false,
       credibility: { p1: 100, p2: 100 },
+      roundsWon: { p1: 0, p2: 0 },
       round: 1,
       turns: [{ speaker: 'p1', text: 'first line' }],
       events: []

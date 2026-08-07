@@ -69,4 +69,16 @@ describe('FightEngine', () => {
     expect(e.state.p1.roundsWon).toBe(1);
     expect(e.state.round).toBe(2);
   });
+
+  it('scores a simultaneous KO as a draw instead of favoring whichever side is checked first', () => {
+    const e = new FightEngine('p1', 'LOCAL 7B', 'LOCAL 7B');
+    e.state.p1.credibility = 4;
+    e.state.p2.credibility = 4;
+    const events = e.completeTurn('p1', 'A short jab.');
+    expect(events.filter((event) => event.type === 'ko')).toHaveLength(2);
+    expect(events).toContainEqual({ type: 'roundEnd', winner: null, round: 1 });
+    expect(e.state.p1.roundsWon).toBe(0);
+    expect(e.state.p2.roundsWon).toBe(0);
+    expect(e.state.round).toBe(2);
+  });
 });

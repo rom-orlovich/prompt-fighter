@@ -134,9 +134,13 @@ export function resolve(input: ResolveInput): CombatEvent[] {
     def.combo = 0;
   }
 
-  // A super always drains the meter to zero regardless of any ability's own meter
-  // bonus (there is nothing left to bank once the bar has just been spent).
-  atk.meter = isSuper ? 0 : Math.min(MAX_METER, meterAfterGain + abilities.meterBonus);
+  // Spending a super drains the meter that triggered it, then applies any meter
+  // granted by the super itself. This matters for LOCAL 7B's FAST INFERENCE:
+  // discarding its +20 here made the advertised effect a complete no-op on the
+  // full-meter path (while still emitting an ability event claiming it happened).
+  atk.meter = isSuper
+    ? Math.min(MAX_METER, abilities.meterBonus)
+    : Math.min(MAX_METER, meterAfterGain + abilities.meterBonus);
   events.push({ type: 'meter', who: attacker, value: atk.meter });
 
   events.push(...abilities.events);
@@ -149,7 +153,6 @@ export function resolve(input: ResolveInput): CombatEvent[] {
       name: SUPER_NAMES[atk.name] ?? 'FINAL ARGUMENT',
       damage
     });
-    events.push({ type: 'meter', who: attacker, value: 0 });
   }
 
   const playerIsDefending = defender === state.playerSide;
