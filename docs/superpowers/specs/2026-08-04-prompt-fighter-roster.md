@@ -503,4 +503,4 @@ X server, but an `Xvfb`-style display is still software rendering, so the same 5
 real GPU, `--workers=2` all green"; it now carries the same split (updated for the current
 23-spec count) plus the contention measurements behind `playwright.config.ts`'s `workers`/
 `retries` settings, so the two docs no longer disagree. Unit tests are host-independent:
-**235 vitest specs** as of 2026-08-07 (186 as of 2026-08-06).
+**240 vitest specs** as of 2026-08-07 (186 as of 2026-08-06).

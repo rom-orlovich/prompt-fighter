@@ -46,10 +46,12 @@ function count(text: string, re: RegExp): number {
   return (text.match(re) ?? []).length;
 }
 
-/** Any Latin letter, digit or Hebrew letter — the same content characters
- * `text.ts`'s `words()` keeps. A message with none of these is punctuation,
- * whitespace or empty: it said nothing, so it is not an argument at all. */
-const HAS_CONTENT = /[a-z0-9֐-׿]/i;
+/** Any Unicode letter, Unicode number, or an emoji (`Extended_Pictographic`).
+ * A message with none of these is punctuation, whitespace or empty: it said
+ * nothing, so it is not an argument at all. Deliberately script-agnostic —
+ * the previous Latin/digit/Hebrew-only check silently WHIFFed real content
+ * written in Cyrillic, CJK, Arabic, or emoji-only messages. */
+const HAS_CONTENT = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
 
 export function analyze(text: string, ctx: AnalyzeContext = {}): MoveIntent {
   const tags: MoveTag[] = [];

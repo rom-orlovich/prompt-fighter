@@ -83,7 +83,7 @@ recorded transcript for live models means implementing one interface — `MatchS
 and changing nothing else.
 
 ```bash
-npm test        # 235 tests over the analyzer, combat resolver, match state machine,
+npm test        # 240 tests over the analyzer, combat resolver, match state machine,
                 # brains, roster data and the live-mode server
 npm run build
 ```

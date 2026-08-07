@@ -132,4 +132,22 @@ describe('analyze', () => {
       expect(analyze('No.', ctx).kind).toBe('JAB');
     });
   });
+
+  describe('non-Latin scripts and emoji-only text are real content, not a silent WHIFF', () => {
+    const samples: Record<string, string> = {
+      cyrillic:
+        'Это совершенно очевидный аргумент, подкреплённый множеством практических примеров из реальной практики.',
+      japanese: 'これは明らかに正しい主張であり、実務で繰り返し確認されてきた結果に基づいている。',
+      arabic: 'هذه حجة واضحة تماما تستند إلى سنوات من الخبرة العملية في هذا المجال بالتحديد.',
+      'emoji-only': '🔥🔥🔥👊💥'
+    };
+
+    for (const [label, text] of Object.entries(samples)) {
+      it(`classifies ${label} text as a real move, not WHIFF`, () => {
+        const m = analyze(text, ctx);
+        expect(m.kind).not.toBe('WHIFF');
+        expect(m.power).toBeGreaterThan(0);
+      });
+    }
+  });
 });
