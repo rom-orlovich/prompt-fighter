@@ -1,5 +1,6 @@
-/** Picks between the two `FighterBrain` implementations. Defaults to `local` so the
- * CLI and server run with zero setup — see `local.ts`'s doc comment for why. */
+/** Picks between the `local`, `openrouter`, and `claude-tui` `FighterBrain`
+ * implementations. Defaults to `local` so the CLI and server run with zero
+ * setup — see `local.ts`'s doc comment for why. */
 
 import { createLocalBrain } from './local';
 import { createOpenRouterBrain } from './openrouter';

@@ -150,7 +150,7 @@ async function runLocalMode(): Promise<void> {
     console.log('='.repeat(64));
     process.exitCode = 0;
   } finally {
-    await disposeBrains([p1Brain, p2Brain]);
+    await disposeBrains(activeBrains);
   }
 }
 
@@ -200,7 +200,7 @@ async function runConnectMode(): Promise<void> {
     await runRemoteClient({ url: values.connect!, side, brain, token: values.token });
     process.exitCode = 0;
   } finally {
-    await disposeBrains([brain]);
+    await disposeBrains(activeBrains);
   }
 }
 

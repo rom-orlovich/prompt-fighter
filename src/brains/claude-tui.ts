@@ -46,6 +46,9 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_SESSION = 'pf-brains';
 const POLL_INTERVAL_MS = 1000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+/** How many lines of scrollback `capturePane` pulls per poll — enough to keep a whole
+ * turn's marker pair in view without capturing unbounded history on every poll. */
+const PANE_SCROLLBACK_LINES = 400;
 /** Filename the TUI is launched with. `claude <arg>` treats its argument as the initial
  * *prompt text*, not a file flag — passing a bare filename works because the model then
  * reads that file out of its working directory. A plain basename (never an absolute
@@ -183,6 +186,13 @@ async function tmux(...args: string[]): Promise<string> {
   return stdout;
 }
 
+/** The `session:window` tmux target format, centralized so the 4 call sites that build
+ * it can't drift from each other (a stray typo in one would silently target the wrong
+ * window). */
+function windowTarget(session: string, windowName: string): string {
+  return `${session}:${windowName}`;
+}
+
 /**
  * Creates `windowName` inside `session`, creating the session itself first if this is
  * its first window. Deliberately does NOT create a separate `_placeholder` window when
@@ -223,7 +233,14 @@ function createBriefDir(token: string, brief: string): string {
 }
 
 async function capturePane(session: string, windowName: string): Promise<string> {
-  return tmux('capture-pane', '-t', `${session}:${windowName}`, '-p', '-S', '-400');
+  return tmux(
+    'capture-pane',
+    '-t',
+    windowTarget(session, windowName),
+    '-p',
+    '-S',
+    `-${PANE_SCROLLBACK_LINES}`
+  );
 }
 
 /** Sends text and Enter as two separate tmux invocations — a single bundled
@@ -238,7 +255,7 @@ async function capturePane(session: string, windowName: string): Promise<string>
  * submitted prompt is a harmless no-op in the Claude Code TUI, so the extra keypress
  * never double-submits anything. */
 async function sendLine(session: string, windowName: string, text: string): Promise<void> {
-  const target = `${session}:${windowName}`;
+  const target = windowTarget(session, windowName);
   await tmux('send-keys', '-t', target, '-l', text);
   await tmux('send-keys', '-t', target, 'Enter');
   await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -294,7 +311,7 @@ export function createClaudeTuiBrain(
     await tmux(
       'send-keys',
       '-t',
-      `${session}:${name}`,
+      windowTarget(session, name),
       `cd ${JSON.stringify(dir)} && ${claudeCommand} '${BRIEF_FILENAME}'`,
       'Enter'
     );
@@ -336,7 +353,7 @@ export function createClaudeTuiBrain(
       disposed = true;
       if (windowName) {
         try {
-          await tmux('kill-window', '-t', `${session}:${windowName}`);
+          await tmux('kill-window', '-t', windowTarget(session, windowName));
         } catch {
           // Already closed (or never fully opened) — dispose() must stay idempotent.
         }
