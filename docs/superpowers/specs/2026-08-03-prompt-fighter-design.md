@@ -291,8 +291,11 @@ Dark void, neon grid floor with reflection, volumetric spotlights, Tekken-style 
 
 Each fighter is a **real CC0 low-poly humanoid model** with realistic (~7-head) proportions,
 loaded via `GLTFLoader` and animated at runtime with `AnimationMixer` against a genuine
-unarmed-combat clip set of 15 shared pose clips (idle and guard stances, jab, cross, hook,
-hit reactions, a slide, a jump and a K.O.), trimmed and merged from two CC0 animation
+unarmed-combat clip set — 12 pose clips actually driving the rig (idle and guard stances,
+jab, cross, hook, hit reactions, a slide, a jump, a K.O. and a victory dance; see
+`POSE_CLIPS` in `src/render/fighter.ts`), out of 15 clips vendored and shipped in
+`Anims.glb` (three — `Idle_Loop`, `Crouch_Idle_Loop`, `Walk_Loop` — are trimmed in but
+currently unused by any pose), trimmed and merged from two CC0 animation
 libraries (G17/G20a — see the roster spec). All four fighters share one rig. The body's own skin/costume texture is what the mesh reads as (G23 —
 see below); brand identity comes from a fresnel rim glow, a ground glow, a recoloured
 trunks/briefs accent baked into that same texture, and per-fighter hair/height/build, not from
@@ -433,7 +436,7 @@ the same place:
   spec failing on each full run. That signature is contention, not a defect, which is what the
   single retry in `playwright.config.ts` covers — a genuinely broken spec still fails both
   attempts.
-- Unit tests, `tsc --noEmit` and both builds are host-independent and green: **235 vitest tests**
+- Unit tests, `tsc --noEmit` and both builds are host-independent and green: **240 vitest tests**
   as of 2026-08-07 (124 was the count when this line was first written, 186 as of
   2026-08-06; the suite has kept growing, including the `claude-tui` brain's marker-protocol
   and factory-wiring coverage, and the spectate source/protocol tests).
@@ -450,9 +453,9 @@ It is a judgment about the fight's overall presentation and feel, not a list of 
 is **not met.**
 
 One factual note that helps scope it later, drawn from §5 itself rather than added as a theory:
-the shipped animation vocabulary is 15 pose clips — idle and guard stances, jab, cross, hook,
-hit reactions, a slide, a jump and a K.O. — all shared across one rig (expanded from the
-original six by G17/G20a). The engine's move set (`JAB` · `HEAVY` · `PARRY` →
+the shipped animation vocabulary is 12 pose clips — idle and guard stances, jab, cross, hook,
+hit reactions, a slide, a jump, a K.O. and a victory dance — all shared across one rig
+(expanded from the original six by G17/G20a). The engine's move set (`JAB` · `HEAVY` · `PARRY` →
 `COUNTER` · `CRIT` · `GUARD` · `GRAPPLE` · supers, plus a combo counter, §2) is still richer
 than the animation set that has to express it, but a combo now reads as a sequence of distinct
 strikes advancing by chain position (G18), not merely as a number on the HUD. That is a

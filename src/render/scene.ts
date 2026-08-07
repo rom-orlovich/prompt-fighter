@@ -199,9 +199,14 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   let zoom = 0;
   let running = false;
 
-  /** Advances simulation, hit-stop, shake and the camera. Never draws. */
-  function step(): void {
-    const raw = Math.min(clock.getDelta(), 0.05);
+  /**
+   * Advances simulation, hit-stop, shake and the camera by `rawInput` seconds
+   * (already clamped by the caller). Never draws. Split out from `step()` so
+   * `startSimulation()` can drive it with a caught-up delta instead of always
+   * reading `clock.getDelta()` itself — see `startSimulation` below for why.
+   */
+  function stepBy(rawInput: number): void {
+    const raw = rawInput;
 
     let dt = raw;
     if (hitstopRemaining > 0) {
@@ -228,6 +233,11 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
     camera.lookAt(CAMERA_TARGET);
   }
 
+  /** `requestAnimationFrame` path: one real frame's delta, straight from the clock. */
+  function step(): void {
+    stepBy(Math.min(clock.getDelta(), 0.05));
+  }
+
   function frame(): void {
     requestAnimationFrame(frame);
     step();
@@ -252,11 +262,35 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
       clock.getDelta();
       frame();
     },
+    // `?fast=1` (no `draw=1`) runs the simulation off a plain `setInterval`
+    // instead of `requestAnimationFrame` — no canvas to paint, so nothing to
+    // sync to. Under CPU contention (many parallel headless Chromium instances
+    // fighting for the main thread — exactly what `fullyParallel` e2e runs
+    // produce) `setInterval` ticks get delayed and bunched up; naively calling
+    // `step()` once per tick would each time only advance by the 0.05s clamp,
+    // so the simulated clock would silently fall behind real wall-clock time
+    // the longer contention lasts. Assertions that measure recovery via real
+    // time (`performance.now()`) against a fixed budget would then see a match
+    // that "hasn't recovered yet" even though, in simulated time, it has.
+    // Instead: read the REAL elapsed delta once per tick and consume it in
+    // bounded 0.05s substeps, catching the simulated clock up to real time no
+    // matter how sparsely the interval actually fired.
     startSimulation: () => {
       if (running) return;
       running = true;
       clock.getDelta();
-      window.setInterval(step, 16);
+      window.setInterval(() => {
+        let remaining = clock.getDelta();
+        // Never burn more than ~10s of catch-up in a single tick — that's a
+        // backgrounded/paused tab, not "the tab is just slow", and running
+        // thousands of substeps synchronously would itself stall the thread.
+        let guard = 200;
+        while (remaining > 1e-6 && guard-- > 0) {
+          const sub = Math.min(remaining, 0.05);
+          stepBy(sub);
+          remaining -= sub;
+        }
+      }, 16);
     },
     shake: (amount) => {
       shakeAmount = Math.min(MAX_SHAKE, Math.max(shakeAmount, amount));

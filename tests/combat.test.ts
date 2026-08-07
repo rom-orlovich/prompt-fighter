@@ -168,6 +168,27 @@ describe('resolve', () => {
       expect(s.p2.combo).toBe(0);
     });
 
+    it('with no active prior combo, still emits a comboBreak on the undercutter so the pivot visibly dodges', () => {
+      // Distinct from the case above: here the undercutter has no live combo
+      // going in (fresh match) *and* the intent does not continue a thread, so
+      // `atk.combo` never leaves 0. The pivot still evades outright and the
+      // dodge reaction must still play — `main.ts`'s comboBreak handler never
+      // gates on combo count, so the event must fire regardless of whether
+      // there was anything to actually break.
+      const s = newMatch();
+      expect(s.p2.combo).toBe(0);
+      const evts = resolve({
+        attacker: 'p2',
+        intent: undercut({ continuesThread: false }),
+        playerAction: 'PIVOT',
+        state: s
+      });
+      expect(evts.some((e) => e.type === 'comboBreak' && e.by === 'p2')).toBe(true);
+      expect(evts.some((e) => e.type === 'whiff' && e.by === 'p2')).toBe(true);
+      expect(s.p2.combo).toBe(0);
+      expect(damageTo(evts, 'p1')).toBe(0);
+    });
+
     it('is strictly better than pivoting into anything else', () => {
       const vsUndercut = newMatch();
       resolve({ attacker: 'p2', intent: undercut(), playerAction: 'PIVOT', state: vsUndercut });
