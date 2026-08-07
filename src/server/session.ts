@@ -27,7 +27,7 @@ export interface TurnRecord {
 
 /** Broadcast to every client on connect and after every accepted turn. */
 export interface SessionSnapshot {
-  type: 'hello' | 'turn';
+  type: 'hello' | 'turn' | 'thinking';
   topic: string;
   names: { p1: string; p2: string };
   nextSpeaker: Speaker;
@@ -95,6 +95,24 @@ export class MatchSession {
       round: this.engine.state.round,
       turns: this.turns,
       events: this.history
+    };
+  }
+
+  /** Purely informational — never mutates session state. Broadcast the instant a
+   * real `--connect` client's brain starts composing its turn, so a spectator sees
+   * "X is thinking" instead of silence between the previous `turn` snapshot and the
+   * next one. */
+  thinkingSnapshot(speaker: Speaker): SessionSnapshot {
+    return {
+      type: 'thinking',
+      topic: this.topic,
+      names: this.names,
+      nextSpeaker: speaker,
+      matchOver: this.matchOver,
+      credibility: this.credibility(),
+      round: this.engine.state.round,
+      turns: [],
+      events: []
     };
   }
 

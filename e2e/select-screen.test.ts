@@ -2,6 +2,13 @@ import { test, expect } from '@playwright/test';
 
 test.describe('character select screen', () => {
   test('renders four visually distinct fighters on startup', async ({ page }) => {
+    // Reading the preview canvases requires them to have actually drawn a real frame
+    // first, which — like every other WebGL-driven readiness check in this suite —
+    // can take meaningfully longer than a hopeful fixed delay under the CPU
+    // contention `fullyParallel` parallel Chromium instances create. A fixed
+    // `waitForTimeout` before reading pixels is exactly that hopeful-guess pattern;
+    // give this one real headroom rather than a best-effort budget.
+    test.setTimeout(60000);
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(String(e)));
 
@@ -34,8 +41,23 @@ test.describe('character select screen', () => {
     const previews = page.locator('.fighter-preview');
     await expect(previews).toHaveCount(4);
 
-    // Let the preview renderers draw a few frames before reading their pixels.
-    await page.waitForTimeout(2500);
+    // Poll for the preview renderers to have actually drawn a real (non-blank) frame
+    // each, instead of guessing a fixed delay is "enough time" — under contention a
+    // fixed wait is exactly the readiness race this suite has been hardened against
+    // elsewhere (see the `polling: 100` waitForFunction calls in the other specs).
+    await page.waitForFunction(
+      () => {
+        const canvases = Array.from(
+          document.querySelectorAll('.fighter-preview')
+        ) as HTMLCanvasElement[];
+        return (
+          canvases.length === 4 &&
+          canvases.every((c) => c.toDataURL('image/png').length > 2000)
+        );
+      },
+      null,
+      { timeout: 45000, polling: 200 }
+    );
     const shots = await previews.evaluateAll((els) =>
       els.map((c) => (c as HTMLCanvasElement).toDataURL('image/png'))
     );

@@ -13,7 +13,18 @@ import { test, expect } from '@playwright/test';
  */
 
 test.describe('full match with abilities', () => {
-  test('plays a full fast match end-to-end and fires ability events', async ({ page }) => {
+  test('replays a full fast bundled-transcript match end-to-end and fires ability events', async ({ page }) => {
+    // The playwright.config.ts `workers`/`retries` comments document real WebGL/CPU
+    // contention on a shared box that can starve a frame loop enough to brush the
+    // default 30000ms test timeout even though nothing about the app is broken
+    // (confirmed by re-running the same spec standalone, where it consistently
+    // passes on the first attempt in ~25-28s). Widening both this test's own
+    // timeout AND the `waitForFunction` below (25000ms -> 45000ms) gives real
+    // headroom against that transient contention without masking an actual hang —
+    // a genuine hang still fails, just at 45s/60s instead of a razor-thin 25s/30s
+    // margin that was tripping on nothing but scheduling jitter.
+    test.setTimeout(60000);
+
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(String(e)));
 
@@ -41,7 +52,7 @@ test.describe('full match with abilities', () => {
 
     // The player's card overrides p1: with CODEX picked, this becomes a CODEX vs
     // CODEX matchup even though the transcript's own p1 is CLAUDE.
-    await page.waitForFunction(() => (window as any).__pf.selection !== null);
+    await page.waitForFunction(() => (window as any).__pf.selection !== null, null, { polling: 100 });
     const selection = await page.evaluate(() => (window as any).__pf.selection);
     expect(selection.p1.fighter).toBe('CODEX');
     expect(selection.p1.source).toBe('transcript');
@@ -49,7 +60,8 @@ test.describe('full match with abilities', () => {
 
     // Let the fast-paced match play all the way to a decision.
     await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
-      timeout: 25000
+      timeout: 45000,
+      polling: 100
     });
 
     const events = await page.evaluate(() => (window as any).__pf.events);

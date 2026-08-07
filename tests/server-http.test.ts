@@ -210,3 +210,78 @@ describe('GET /stream (SSE)', () => {
     controller.abort();
   });
 });
+
+describe('startServer rejects an empty-string token', () => {
+  it('throws a clear configuration error instead of starting an unusable, permanently-401 server', () => {
+    expect(() => startServer({ port: 0, token: '' })).toThrow(/token/i);
+  });
+});
+
+describe('POST /thinking', () => {
+  it('broadcasts a type: "thinking" snapshot naming the composing speaker', async () => {
+    const controller = new AbortController();
+    const res = await fetch(baseUrl('/stream'), {
+      signal: controller.signal,
+      headers: { Accept: 'text/event-stream' }
+    });
+    const reader = res.body!.getReader();
+    await reader.read(); // consume the initial `hello`
+
+    await fetch(baseUrl('/thinking'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speaker: 'p1' })
+    });
+
+    const { value } = await reader.read();
+    const chunk = new TextDecoder().decode(value);
+    const payload = JSON.parse(chunk.replace(/^data: /, '').trim());
+    expect(payload.type).toBe('thinking');
+    expect(payload.nextSpeaker).toBe('p1');
+    expect(payload.matchOver).toBe(false);
+
+    controller.abort();
+  });
+
+  it('rejects an unknown speaker with 400, matching /turn', async () => {
+    const res = await fetch(baseUrl('/thinking'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speaker: 'p3' })
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('requires the match token, same as every other route', async () => {
+    const res = await fetch(`${origin}/thinking`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speaker: 'p1' })
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('a "thinking" broadcast never advances nextSpeaker or turns — purely informational', async () => {
+    await fetch(baseUrl('/thinking'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speaker: 'p1' })
+    });
+    const state = await (await fetch(baseUrl('/state'))).json();
+    expect(state.turns).toEqual([]);
+    expect(state.nextSpeaker).toBe('p1');
+  });
+});
+
+describe('CORS', () => {
+  it('every response carries Access-Control-Allow-Origin so a cross-origin spectator page can read it', async () => {
+    const res = await fetch(baseUrl('/state'));
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  it('answers OPTIONS without requiring the match token (preflight bypass)', async () => {
+    const res = await fetch(`${origin}/state`, { method: 'OPTIONS' });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+  });
+});

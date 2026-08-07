@@ -19,6 +19,7 @@ import { simulateTranscript } from './engine/simulate';
 import type { SimulateResult } from './engine/simulate';
 import { createReplaySource, loadTranscript } from './sources/replay';
 import { createLiveSource } from './sources/live';
+import { createSpectateSource } from './sources/spectate';
 import type { MatchSource, StreamHandlers } from './sources/types';
 import { createBrain } from './brains/index';
 import { createAudio, SFX_CUES, type Sfx, type SfxCue } from './render/audio';
@@ -205,9 +206,23 @@ interface ContactRecord {
   streak: number;
 }
 
+/** One entry in `DebugBridge.spectateLog` — a causality trace an e2e test can read
+ * to prove a spectate state change happened synchronously with a real server
+ * snapshot's arrival, never on a local timer (D5). `kind` names which handler
+ * fired (`'turnStart'`, `'turnEnd'`, `'serverSnapshot'`); `speaker` is set for the
+ * two that carry one. */
+interface SpectateLogEntry {
+  at: number;
+  kind: string;
+  speaker?: Speaker;
+}
+
 interface DebugBridge {
   /** Every CombatEvent emitted by the current (or most recent) match, in order. */
   events: CombatEvent[];
+  /** Causality trace for spectate mode only (D5/D6) — see `SpectateLogEntry`.
+   * Empty outside spectate mode; reset every time a fresh spectate match starts. */
+  spectateLog: SpectateLogEntry[];
   /** Flips true the moment a `matchEnd` event fires. */
   matchEnded: boolean;
   /** `performance.now()` of the most recent `matchEnd`, or null. */
@@ -330,6 +345,7 @@ const sfx: Sfx = (() => {
 
 window.__pf = {
   events: [],
+  spectateLog: [],
   matchEnded: false,
   matchEndedAt: null,
   koAt: null,
@@ -369,6 +385,33 @@ const resultOverlay = document.getElementById('result')!;
 const resultTitle = document.getElementById('result-title')!;
 const resultSub = document.getElementById('result-sub')!;
 
+// --- spectate readout -------------------------------------------------------
+//
+// The one piece of UI unique to spectate mode: a small on-screen label naming
+// whose turn it is and whether they are still composing or have already landed
+// their move. Written ONLY from `spectateHandlers` below (never from the shared
+// replay/local-live `handlers`), so it stays hidden and untouched in every other
+// mode — see D6.
+
+const spectateStatusEl = document.getElementById('spectate-status')!;
+
+/** Updates the on-screen composing/landed readout and appends a timestamped
+ * entry to `window.__pf.spectateLog` (D5/D6) — called ONLY from a real snapshot
+ * arrival (`spectateHandlers.onTurnStart`/`onTurnEnd`), never from a timer, so the
+ * log's timestamps are proof the UI changed in lockstep with the network, not on
+ * a local clock. */
+function setSpectateStatus(speaker: Speaker, state: 'composing' | 'landed'): void {
+  if (!engine) return;
+  const name = engine.state[speaker].name;
+  spectateStatusEl.textContent = state === 'composing' ? `${name} — composing…` : `${name} — landed`;
+  spectateStatusEl.classList.remove('hidden');
+  window.__pf.spectateLog.push({
+    at: performance.now(),
+    kind: state === 'composing' ? 'turnStart' : 'turnEnd',
+    speaker
+  });
+}
+
 // The character-select screen is built once at startup and lives for the whole
 // session — picking a card only records the player's override, it never rebuilds
 // the grid or blocks on a match starting.
@@ -385,6 +428,17 @@ let source: MatchSource | null = null;
 let roundJustEnded = false;
 let fighting = false;
 let roundClock = ROUND_SECONDS;
+/**
+ * True only while a spectate match (`spectateHandlers`) is running. Gates the
+ * ONE local combat decision every other mode is allowed to make on its own —
+ * `stage.onFrame`'s round-clock timeout calling `engine.endRoundOnTime()` (see
+ * below) — since spectate mode's round/credibility/matchOver state must come
+ * from the server's own snapshots only, never be computed here (D4's
+ * "server-authoritative" requirement, extended past `sources/spectate.ts` itself
+ * to this file, which is the only other place that could accidentally recompute
+ * combat state locally).
+ */
+let spectateActive = false;
 
 /**
  * Set by `case 'comboBreak'` below, consumed (and cleared) by the very next
@@ -529,7 +583,7 @@ stage.onFrame((dt, elapsed, real) => {
     lastFrameX = { p1: live.p1.position[0], p2: live.p2.position[0] };
   }
 
-  if (fighting && engine && !engine.matchOver) {
+  if (fighting && engine && !engine.matchOver && !spectateActive) {
     roundClock = Math.max(0, roundClock - dt * CLOCK_RATE);
     hud.setTimer(roundClock);
     if (roundClock === 0 && !roundJustEnded) engine.endRoundOnTime();
@@ -638,7 +692,7 @@ async function startMatch(file: string): Promise<void> {
  * with zero duplicated wiring.
  */
 async function startLiveMatch(): Promise<void> {
-  const brains = { p1: createBrain('local'), p2: createBrain('local') };
+  const brains = { p1: await createBrain('local'), p2: await createBrain('local') };
   const liveSource = createLiveSource(LIVE_TOPIC, LIVE_NAMES, brains, { chunkMs: LIVE_CHUNK_MS });
 
   await beginMatch(liveSource, {
@@ -646,6 +700,28 @@ async function startLiveMatch(): Promise<void> {
     names: LIVE_NAMES,
     p1TranscriptFighter: playerCardOverride ?? LIVE_NAMES.p1
   });
+}
+
+/**
+ * Spectate Mode entry point (D2): connects to a real, already-running `http.ts`
+ * server as a pure watcher — no brain, no turn submission, no player card
+ * override (there is no player to override anything for). `createSpectateSource`
+ * does the one async step (an initial `/state` fetch) every other source skips,
+ * which is why this function — unlike `startMatch`/`startLiveMatch`, which build
+ * their source synchronously before awaiting `beginMatch` — awaits the source
+ * itself first.
+ */
+async function startSpectateMatch(serverUrl: string, token: string | undefined): Promise<void> {
+  const spectateSource = await createSpectateSource(serverUrl, token);
+  await beginMatch(
+    spectateSource,
+    {
+      topic: spectateSource.topic,
+      names: spectateSource.names,
+      p1TranscriptFighter: spectateSource.names.p1
+    },
+    spectateHandlers
+  );
 }
 
 interface BeginMatchOptions {
@@ -658,12 +734,26 @@ interface BeginMatchOptions {
   p1TranscriptFighter: string;
 }
 
-/** Shared match bring-up: resolves the fighter matchup, resets every debug-bridge
+/**
+ * Shared match bring-up: resolves the fighter matchup, resets every debug-bridge
  * and presentation counter, builds the two rigs, and starts `runLoop` against
- * whichever `MatchSource` the caller built (`createReplaySource` or
- * `createLiveSource`) — the one thing a replay and a live match do differently. */
-async function beginMatch(matchSource: MatchSource, options: BeginMatchOptions): Promise<void> {
+ * whichever `MatchSource` the caller built (`createReplaySource`,
+ * `createLiveSource`, or `createSpectateSource`) — the one thing those sources
+ * do differently. `streamHandlers` defaults to the shared replay/local-live
+ * `handlers` object below; `startSpectateMatch` is the only caller that passes
+ * `spectateHandlers` instead, which is also what flips `spectateActive` (see its
+ * doc comment) — every other mode is completely unaffected by that flag's
+ * existence.
+ */
+async function beginMatch(
+  matchSource: MatchSource,
+  options: BeginMatchOptions,
+  streamHandlers: StreamHandlers = handlers
+): Promise<void> {
   source?.stop();
+  spectateActive = streamHandlers === spectateHandlers;
+  if (!spectateActive) spectateStatusEl.classList.add('hidden');
+  window.__pf.spectateLog = [];
 
   const { topic, names, p1TranscriptFighter } = options;
   const matchup = selectMatchup(
@@ -728,7 +818,7 @@ async function beginMatch(matchSource: MatchSource, options: BeginMatchOptions):
   await sleep(ROUND_INTRO_MS);
   hud.announce('FIGHT!');
 
-  void runLoop();
+  void runLoop(streamHandlers);
 }
 
 const handlers: StreamHandlers = {
@@ -750,44 +840,116 @@ const handlers: StreamHandlers = {
     engine.setPlayerAction(action);
     rigs[speaker].setCharge(0);
     engine.completeTurn(speaker, fullText);
-    // Captured into a local NOW, not read from inside the timeout below: a
-    // turn's own synchronous event batch (including any `comboBreak` above)
-    // has already fully run by this point in `onTurnEnd`, but the next
-    // turn's `onTurnStart`/`onTurnEnd` can fire before THIS turn's
-    // `RECOVERY_MS` timeout does (turns don't wait on each other's recovery
-    // timer) — reading the shared variable from inside the closure would
-    // risk applying a stale or a too-early victim from whichever turn
-    // happens to run first. A per-call local has no such race.
-    const dodgeSide = comboBreakVictim;
-    comboBreakVictim = null;
-    // See the long comment on `jumpSide` above for why this is captured and
-    // cleared here, the same way `dodgeSide` is.
-    const jumpingSide = jumpSide;
-    jumpSide = null;
-
-    setTimeout(() => {
-      if (!engine || engine.matchOver || !rigs) return;
-      // Return to the guard — but NEVER out of a knockdown or a victory pose.
-      // This reset used to be guarded only by `matchOver`, so a round-ending
-      // K.O. (which is not match-over) had its death animation wiped ~700ms
-      // later and the loser stood back up mid-count. `ko` and `win` are held
-      // until the next round explicitly clears them.
-      for (const side of ['p1', 'p2'] as const) {
-        if (TERMINAL_POSES.has(rigs[side].currentPose())) continue;
-        // G17: a fighter whose opponent's combo broke THIS turn ducks/leans
-        // instead of going straight back to idle — see `case 'comboBreak'`.
-        // G20a: a fighter who threw a GRAPPLE this turn hops clear instead —
-        // see `jumpSide`. `dodgeSide` and `jumpingSide` can never name the
-        // same side in the same turn (see `jumpSide`'s doc comment), so this
-        // is never ambiguous.
-        const pose = side === dodgeSide ? 'dodge' : side === jumpingSide ? 'jump' : 'idle';
-        rigs[side].setPose(pose);
-      }
-    }, RECOVERY_MS);
+    scheduleRecoveryPoses();
   }
 };
 
-async function runLoop(): Promise<void> {
+/**
+ * Spectator-only `StreamHandlers` (D2/D3/D5/D6) — wired through the exact same
+ * `MatchSource` seam as `handlers` above via `beginMatch`'s `streamHandlers`
+ * parameter, but never calls `engine.completeTurn`, `engine.setPlayerAction`, or
+ * `hud.open/closeActionWindow`: there is no local player and no local combat
+ * decision to make. Credibility/round/matchOver/events all arrive instead
+ * through `onServerSnapshot`, mirrored from the server verbatim (D4). The
+ * pose/charge/recovery-timing side of things (`setPose('windup')`, charge
+ * growth, the post-turn recovery beat) is identical to `handlers` — reusing
+ * `scheduleRecoveryPoses()` is what keeps that half byte-for-byte the same
+ * without duplicating it.
+ */
+const spectateHandlers: StreamHandlers = {
+  onTurnStart(speaker) {
+    if (!rigs) return;
+    rigs[speaker].setPose('windup');
+    setSpectateStatus(speaker, 'composing');
+  },
+
+  onTurnChunk(speaker, textSoFar) {
+    if (!rigs || !engine) return;
+    rigs[speaker].setCharge(Math.min(1, textSoFar.split(' ').length / 45));
+    hud.subtitle(engine.state[speaker].name, colorOf(speaker), textSoFar);
+  },
+
+  onTurnEnd(speaker) {
+    if (!rigs || !engine) return;
+    rigs[speaker].setCharge(0);
+    setSpectateStatus(speaker, 'landed');
+    scheduleRecoveryPoses();
+  },
+
+  onServerSnapshot(snapshot) {
+    if (!engine) return;
+    // Server-authoritative (D4): every field here is a direct copy of what the
+    // server broadcast, never a value this file computed. `roundsWon` is the one
+    // exception worth calling out — `src/engine/match.ts` normally increments it
+    // as part of `completeTurn`/`endRoundOnTime`, neither of which spectate mode
+    // is allowed to call (see `spectateActive`'s doc comment) — so it is relayed
+    // here from the same `roundEnd`/`matchEnd` event's own `winner` field the
+    // server already computed, one line below, rather than recomputed.
+    engine.state.p1.credibility = snapshot.credibility.p1;
+    engine.state.p2.credibility = snapshot.credibility.p2;
+    engine.state.round = snapshot.round;
+    for (const event of snapshot.events) {
+      if ((event.type === 'roundEnd' || event.type === 'matchEnd') && event.winner) {
+        engine.state[event.winner].roundsWon += 1;
+      }
+    }
+    if (snapshot.matchOver) engine.matchOver = true;
+    syncBars();
+    window.__pf.spectateLog.push({ at: performance.now(), kind: 'serverSnapshot' });
+    // Replays every relayed combat event through the exact same presentation
+    // pipeline a replay/local-live match uses — zero duplicated FX/HUD/combo
+    // code (see the module doc comment on `handleEvent`).
+    for (const event of snapshot.events) handleEvent(event);
+  }
+};
+
+/**
+ * The post-turn recovery beat: after `RECOVERY_MS`, every fighter not held in a
+ * terminal pose (K.O./win) settles back to idle — or to the one-off `dodge`/
+ * `jump` reaction a `comboBreak`/GRAPPLE this same turn queued up (see the doc
+ * comments on `comboBreakVictim`/`jumpSide`). Identical for every mode — a
+ * replay/local-live turn (`handlers.onTurnEnd`) and a spectate turn
+ * (`spectateHandlers.onTurnEnd`) both call this, right after clearing their
+ * fighter's charge, so this one beat is never duplicated or allowed to drift
+ * between the two.
+ */
+function scheduleRecoveryPoses(): void {
+  // Captured into locals NOW, not read from inside the timeout below: a turn's
+  // own synchronous event batch (including any `comboBreak` above) has already
+  // fully run by this point, but the next turn's `onTurnStart`/`onTurnEnd` can
+  // fire before THIS turn's `RECOVERY_MS` timeout does (turns don't wait on each
+  // other's recovery timer) — reading the shared variables from inside the
+  // closure would risk applying a stale or a too-early victim from whichever
+  // turn happens to run first. Per-call locals have no such race.
+  const dodgeSide = comboBreakVictim;
+  comboBreakVictim = null;
+  // See the long comment on `jumpSide` above for why this is captured and
+  // cleared here, the same way `dodgeSide` is.
+  const jumpingSide = jumpSide;
+  jumpSide = null;
+
+  setTimeout(() => {
+    if (!engine || engine.matchOver || !rigs) return;
+    // Return to the guard — but NEVER out of a knockdown or a victory pose.
+    // This reset used to be guarded only by `matchOver`, so a round-ending
+    // K.O. (which is not match-over) had its death animation wiped ~700ms
+    // later and the loser stood back up mid-count. `ko` and `win` are held
+    // until the next round explicitly clears them.
+    for (const side of ['p1', 'p2'] as const) {
+      if (TERMINAL_POSES.has(rigs[side].currentPose())) continue;
+      // G17: a fighter whose opponent's combo broke THIS turn ducks/leans
+      // instead of going straight back to idle — see `case 'comboBreak'`.
+      // G20a: a fighter who threw a GRAPPLE this turn hops clear instead —
+      // see `jumpSide`. `dodgeSide` and `jumpingSide` can never name the
+      // same side in the same turn (see `jumpSide`'s doc comment), so this
+      // is never ambiguous.
+      const pose = side === dodgeSide ? 'dodge' : side === jumpingSide ? 'jump' : 'idle';
+      rigs[side].setPose(pose);
+    }
+  }, RECOVERY_MS);
+}
+
+async function runLoop(streamHandlers: StreamHandlers = handlers): Promise<void> {
   // Safety valve: a transcript that never produces a KO would otherwise reset
   // and replay forever, chasing a round win that never comes. Each full,
   // KO-free pass through the transcript counts against this budget.
@@ -815,7 +977,7 @@ async function runLoop(): Promise<void> {
       continue;
     }
 
-    const more = await source?.nextTurn(handlers);
+    const more = await source?.nextTurn(streamHandlers);
     if (!more) {
       exhaustedPasses += 1;
       if (exhaustedPasses > MAX_EXHAUSTED_PASSES) break;
@@ -1353,4 +1515,18 @@ function handleEvent(event: CombatEvent): void {
       break;
     }
   }
+}
+
+// --- spectate entry point ---------------------------------------------------
+//
+// `?spectate=<server-url>&token=<token>` (D2) — present only when a page was
+// opened specifically to watch a live match. Absent (every normal page load —
+// the title screen, the stage picker, Live Mode), this is a complete no-op: zero
+// behavior change to any other mode, matching the "byte-identical" constraint on
+// replay/local-live.
+const SPECTATE_URL = QUERY.get('spectate');
+if (SPECTATE_URL) {
+  void startSpectateMatch(SPECTATE_URL, QUERY.get('token') ?? undefined).catch((err) => {
+    console.error('spectate: failed to connect', err);
+  });
 }

@@ -14,6 +14,7 @@
  */
 
 import { parseArgs } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { FightEngine } from '../engine/match';
 import type { Speaker } from '../engine/types';
 import { createBrain, type BrainKind } from '../brains/index';
@@ -27,24 +28,70 @@ import { runRemoteClient } from '../server/client';
 
 const DEFAULT_TOPIC = 'LIVE MODE: WHICH MODEL ARGUES BETTER';
 
-const { values } = parseArgs({
-  args: process.argv.slice(2),
-  options: {
-    serve: { type: 'boolean', default: false },
-    connect: { type: 'string' },
-    side: { type: 'string' },
-    port: { type: 'string', default: '0' },
-    p1: { type: 'string', default: 'CLAUDE' },
-    p2: { type: 'string', default: 'CODEX' },
-    topic: { type: 'string', default: DEFAULT_TOPIC },
-    brain: { type: 'string', default: 'local' },
-    token: { type: 'string' },
-    'p1-brain': { type: 'string' },
-    'p2-brain': { type: 'string' },
-    'max-turns': { type: 'string' }
-  },
-  allowPositionals: false
-});
+const CLI_OPTIONS = {
+  serve: { type: 'boolean', default: false },
+  connect: { type: 'string' },
+  side: { type: 'string' },
+  port: { type: 'string', default: '0' },
+  host: { type: 'string', default: '127.0.0.1' },
+  p1: { type: 'string', default: 'CLAUDE' },
+  p2: { type: 'string', default: 'CODEX' },
+  topic: { type: 'string', default: DEFAULT_TOPIC },
+  brain: { type: 'string', default: 'local' },
+  token: { type: 'string' },
+  'p1-brain': { type: 'string' },
+  'p2-brain': { type: 'string' },
+  'max-turns': { type: 'string' },
+  help: { type: 'boolean', default: false, short: 'h' }
+} as const;
+
+export type CliValues = ReturnType<typeof parseArgs<{ options: typeof CLI_OPTIONS }>>['values'];
+
+/** Parses CLI args (defaulting to `process.argv.slice(2)`) into `values`, kept as a
+ * standalone export so tests can exercise flag parsing without the module's own
+ * top-level `process.argv` parsing (guarded behind `isMainModule()` below) firing. */
+export function parseCliArgs(argv: string[] = process.argv.slice(2)): CliValues {
+  const { values } = parseArgs({
+    args: argv,
+    options: CLI_OPTIONS,
+    allowPositionals: false
+  });
+  return values;
+}
+
+/** Human-readable usage/help text for `--help`/`-h`, also unit-tested directly so the
+ * documented flags stay in sync with `CLI_OPTIONS`. */
+export function buildUsage(): string {
+  return `Usage: npm run fight -- [options]
+
+Modes:
+  (no flags)                         local full match, both sides in-process
+  --serve [--port N] [--host H]      start the authoritative server
+  --connect <url> --side p1|p2       join a running server as one side
+
+Options:
+  --serve                 start server mode
+  --connect <url>          connect to a running server
+  --side p1|p2              which side to play in --connect mode
+  --port <n>                 server port (default: 0, i.e. OS-assigned)
+  --host <h>                 server bind/connect host (default: 127.0.0.1)
+  --token <t>                match token (serve: pin it, connect: pass it)
+  --p1 <name>                 name for player 1 (default: CLAUDE)
+  --p2 <name>                 name for player 2 (default: CODEX)
+  --topic <t>                 debate topic
+  --brain <kind>              brain kind for both sides unless overridden
+  --p1-brain <kind>            brain kind for p1 only
+  --p2-brain <kind>            brain kind for p2 only
+  --max-turns <n>              cap the number of turns in local mode
+  --help, -h                   show this help and exit
+`;
+}
+
+/** Builds the connect URL clients use to join a `--serve` process, with `host`
+ * threaded through instead of a hardcoded 127.0.0.1 string. */
+export function connectUrl(host: string, port: number, token: string): string {
+  return `http://${host}:${port}?token=${token}`;
+}
 
 function asBrainKind(value: string | undefined, fallback: string): BrainKind {
   const kind = value ?? fallback;
@@ -87,28 +134,27 @@ async function shutdownOnSignal(signal: NodeJS.Signals): Promise<void> {
   process.exit(signal === 'SIGINT' ? 130 : 143);
 }
 
-process.on('SIGINT', () => {
-  void shutdownOnSignal('SIGINT');
-});
-process.on('SIGTERM', () => {
-  void shutdownOnSignal('SIGTERM');
-});
+async function main(values: CliValues): Promise<void> {
+  if (values.help) {
+    console.log(buildUsage());
+    process.exitCode = 0;
+    return;
+  }
 
-async function main(): Promise<void> {
   if (values.connect) {
-    await runConnectMode();
+    await runConnectMode(values);
   } else if (values.serve) {
-    runServeMode();
+    runServeMode(values);
   } else {
-    await runLocalMode();
+    await runLocalMode(values);
   }
 }
 
 /** Deliverable 1: a full local match, both sides driven in-process, no network. */
-async function runLocalMode(): Promise<void> {
+async function runLocalMode(values: CliValues): Promise<void> {
   const names: Names = { p1: values.p1!, p2: values.p2! };
-  const p1Brain = createBrain(asBrainKind(values['p1-brain'], values.brain!));
-  const p2Brain = createBrain(asBrainKind(values['p2-brain'], values.brain!));
+  const p1Brain = await createBrain(asBrainKind(values['p1-brain'], values.brain!));
+  const p2Brain = await createBrain(asBrainKind(values['p2-brain'], values.brain!));
   activeBrains.push(p1Brain, p2Brain);
 
   try {
@@ -156,8 +202,9 @@ async function runLocalMode(): Promise<void> {
 
 /** Deliverable 2, server half: holds the one authoritative `FightEngine` and lets
  * remote clients connect over the network. */
-function runServeMode(): void {
+function runServeMode(values: CliValues): void {
   const names: Names = { p1: values.p1!, p2: values.p2! };
+  const host = values.host!;
   console.log(`starting live-mode server — ${names.p1} vs ${names.p2} — "${values.topic}"`);
 
   startServer({
@@ -170,8 +217,8 @@ function runServeMode(): void {
       // The connect URL carries the token, so joining stays one copy-paste with no
       // extra step. Quoted because `?` is a glob character in bash/zsh — an
       // unquoted URL would fail to expand before the CLI ever saw it.
-      const connect = `"http://127.0.0.1:${port}?token=${token}"`;
-      console.log(`listening on http://127.0.0.1:${port}`);
+      const connect = `"${connectUrl(host, port, token)}"`;
+      console.log(`listening on http://${host}:${port}`);
       console.log(`  match token: ${token}`);
       console.log(`  clients: npm run fight -- --connect ${connect} --side p1`);
       console.log(`           npm run fight -- --connect ${connect} --side p2`);
@@ -188,12 +235,12 @@ function runServeMode(): void {
 
 /** Deliverable 2, client half: one process, one side, driven by a brain, talking to
  * an already-running `--serve` process over the network. */
-async function runConnectMode(): Promise<void> {
+async function runConnectMode(values: CliValues): Promise<void> {
   const side = values.side;
   if (side !== 'p1' && side !== 'p2') {
     throw new Error('--connect requires --side p1 or --side p2');
   }
-  const brain = createBrain(asBrainKind(values.brain, 'local'));
+  const brain = await createBrain(asBrainKind(values.brain, 'local'));
   activeBrains.push(brain);
   console.log(`connecting to ${values.connect} as ${side} (brain: ${brain.kind})`);
   try {
@@ -204,7 +251,29 @@ async function runConnectMode(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(`\nlive mode failed: ${(err as Error).message}`);
-  process.exitCode = 1;
-});
+/** True only when this file is being run directly (e.g. `node dist-node/fight.mjs`),
+ * not when imported (e.g. by tests) — compares this module's URL against the
+ * entrypoint script's, the standard ESM stand-in for CommonJS's `require.main ===
+ * module`. Guards both the SIGINT/SIGTERM registration and `argv` parsing/`main()`
+ * dispatch below, so importing this file never touches `process.argv` or installs
+ * signal handlers as a side effect. */
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return import.meta.url === pathToFileURL(entry).href;
+}
+
+if (isMainModule()) {
+  process.on('SIGINT', () => {
+    void shutdownOnSignal('SIGINT');
+  });
+  process.on('SIGTERM', () => {
+    void shutdownOnSignal('SIGTERM');
+  });
+
+  const values = parseCliArgs();
+  main(values).catch((err) => {
+    console.error(`\nlive mode failed: ${(err as Error).message}`);
+    process.exitCode = 1;
+  });
+}

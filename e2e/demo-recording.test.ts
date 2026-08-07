@@ -44,7 +44,7 @@ test.describe('demo recording', () => {
 
     // The matchup must be two DIFFERENT fighters — the previous demo recorded
     // CODEX vs CODEX because its spec clicked a select card that overrode p1.
-    await page.waitForFunction(() => (window as any).__pf.selection !== null);
+    await page.waitForFunction(() => (window as any).__pf.selection !== null, null, { polling: 100 });
     const selection = await page.evaluate(() => (window as any).__pf.selection);
     expect(selection.p1.fighter).not.toBe(selection.p2.fighter);
 
@@ -56,7 +56,10 @@ test.describe('demo recording', () => {
 
     // Let the match play far enough to show real combat, then stop — a full match
     // runs several rounds and would make an overlong demo clip.
-    await page.waitForFunction(() => (window as any).__pf.events.length >= 12, null, { timeout: 60000 });
+    await page.waitForFunction(() => (window as any).__pf.events.length >= 12, null, {
+      timeout: 60000,
+      polling: 100
+    });
     await page.waitForTimeout(8000);
 
     const later = await readTimer();

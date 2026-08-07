@@ -389,6 +389,26 @@ body {
   gap: 10px;
 }
 
+/* Spectate-only readout (D6) — whose turn it is and whether they're still
+ * composing or already landed, updated ONLY from a real server snapshot arrival
+ * (see `setSpectateStatus` in `main.ts`). Hidden in every other mode. */
+.spectate-status {
+  align-self: flex-start;
+  background: #0a0f1acc;
+  border: 1px solid #2a3550;
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-family: var(--mono);
+  font-size: clamp(10px, 1.2vw, 13px);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffd166;
+}
+.spectate-status.hidden {
+  display: none;
+}
+
 .subtitle {
   display: flex;
   align-items: baseline;

@@ -83,15 +83,17 @@ recorded transcript for live models means implementing one interface — `MatchS
 and changing nothing else.
 
 ```bash
-npm test        # 186 tests over the analyzer, combat resolver, match state machine,
+npm test        # 235 tests over the analyzer, combat resolver, match state machine,
                 # brains, roster data and the live-mode server
 npm run build
 ```
 
 There is also an end-to-end suite (`npm run test:e2e`) that drives the real game in a
-browser. Five of its eighteen specs need a real GPU and deliberately skip themselves under a
-software rasteriser rather than assert something weaker, so a run on a GPU-less machine
-reports 13 passed / 5 skipped.
+browser. Five of its twenty-three specs need a real GPU and deliberately skip themselves under
+a software rasteriser rather than assert something weaker, so a run on a GPU-less machine
+reports 18 passed / 5 skipped. Those 18 are timing-sensitive against a software rasteriser,
+which is why `playwright.config.ts` caps workers and allows one retry — see the comment
+there for the measurements behind those two settings.
 
 Every sound is synthesized at runtime, and the arena, HUD and effects are all Three.js
 primitives and DOM — no audio files, no particle library, no post-processing stack. The
@@ -147,10 +149,13 @@ for exposing the port publicly. A purely local match (`npm run fight` with no `-
 no server, no network and no token — it is unchanged.
 
 By default every fighter uses the **local brain** — deterministic, no key, no network,
-derived from the running match context (see `src/brains/local.ts`). Set
-`OPENROUTER_API_KEY` (copy `.env.example` to `.env`) and pass `--brain openrouter` to have
-a fighter's lines come from a real model instead; with no key, that path fails immediately
-with an actionable error rather than a stack trace or a silent fallback. `--p1-brain` /
+derived from the running match context (see `src/brains/local.ts`). Export
+`OPENROUTER_API_KEY` in your shell (`.env.example` documents the variable, but nothing in
+this codebase loads a `.env` file — no `dotenv` or equivalent is wired in anywhere, so
+copying it to `.env` alone does nothing; the process reading `process.env.OPENROUTER_API_KEY`
+needs it actually exported) and pass `--brain openrouter` to have a fighter's lines come from
+a real model instead; with no key, that path fails immediately with an actionable error
+rather than a stack trace or a silent fallback. `--p1-brain` /
 `--p2-brain` pick per side; `--p1` / `--p2` / `--topic` name the fighters and the debate.
 (The browser button above never exposes this flag — see "In the browser" note.)
 

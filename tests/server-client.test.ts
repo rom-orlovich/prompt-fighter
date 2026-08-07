@@ -8,9 +8,11 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Server } from 'node:http';
-import { parseConnectUrl, runRemoteClient } from '../src/server/client';
+import { ClientState, parseConnectUrl, runRemoteClient } from '../src/server/client';
 import { startServer } from '../src/server/http';
 import { createLocalBrain } from '../src/brains/local';
+import type { SessionSnapshot } from '../src/server/session';
+import type { FighterBrain } from '../src/brains/types';
 
 /** Fails (rejects) instead of hanging if `p` does not settle in time — so a
  * regression of the very bug under test surfaces as a failed assertion, not a
@@ -106,5 +108,102 @@ describe('runRemoteClient survives a dropped connection', () => {
       /lost connection to the match server/i
     );
     await closeServer(server);
+  });
+});
+
+describe('ClientState.apply merges a late "hello" snapshot (the late-join / reconnect race)', () => {
+  it('catches turnCount and lastText up when a turn landed between the /state fetch and the /stream connect', () => {
+    const names = { p1: 'CLAUDE', p2: 'CODEX' };
+    const initial: SessionSnapshot = {
+      type: 'hello',
+      topic: 'T',
+      names,
+      nextSpeaker: 'p2',
+      matchOver: false,
+      credibility: { p1: 100, p2: 100 },
+      round: 1,
+      turns: [{ speaker: 'p1', text: 'first line' }],
+      events: []
+    };
+    const client = new ClientState(names, initial);
+    expect(client.turnCount).toBe(1);
+
+    const raced: SessionSnapshot = {
+      ...initial,
+      nextSpeaker: 'p1',
+      turns: [
+        { speaker: 'p1', text: 'first line' },
+        { speaker: 'p2', text: 'second line, missed by /state' }
+      ],
+      events: []
+    };
+    const lines: string[] = [];
+    client.apply(raced, (line) => lines.push(line));
+
+    expect(client.turnCount).toBe(2);
+    expect(client.lastText.p2).toBe('second line, missed by /state');
+    expect(lines.some((l) => l.includes('second line, missed by /state'))).toBe(true);
+  });
+});
+
+/**
+ * The "thinking" broadcast (`http.ts`'s `POST /thinking`, fired fire-and-forget
+ * from `runRemoteClient` right before `brain.nextMessage`) exists so a spectator
+ * sees "X is thinking" instead of silence while a real brain composes. This proves
+ * the ordering that makes it useful: for a brain slow enough to matter, the
+ * `thinking` snapshot for a turn must reach the wire before that turn's own `turn`
+ * snapshot does — an independent SSE spectator, not the `runRemoteClient` under
+ * test, observes both.
+ */
+describe('a "thinking" snapshot precedes the "turn" snapshot it announces', () => {
+  it('reaches a spectator before the turn, for a brain slow to compose', async () => {
+    const { server, url } = await listen({ p1Name: 'CLAUDE', p2Name: 'CODEX' });
+    const parsed = new URL(url);
+    const token = parsed.searchParams.get('token')!;
+
+    const slowBrain: FighterBrain = {
+      kind: 'slow-test-brain',
+      nextMessage: () => new Promise((resolve) => setTimeout(() => resolve('A slow jab.'), 200))
+    };
+
+    // An independent spectator connection — the thing that must observe both
+    // broadcasts, in order, regardless of what `runRemoteClient` itself does.
+    const streamRes = await fetch(`${parsed.origin}/stream?token=${token}`, {
+      headers: { Accept: 'text/event-stream' }
+    });
+    const reader = streamRes.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const nextEvent = async (): Promise<{ type: string; nextSpeaker?: string }> => {
+      for (;;) {
+        const idx = buffer.indexOf('\n\n');
+        if (idx !== -1) {
+          const raw = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          const dataLine = raw.split('\n').find((l) => l.startsWith('data: '));
+          if (dataLine) return JSON.parse(dataLine.slice(6));
+          continue; // a heartbeat comment (`: ping`) — keep reading, not a real message
+        }
+        const { value, done } = await reader.read();
+        if (done) throw new Error('spectator stream ended');
+        buffer += decoder.decode(value, { stream: true });
+      }
+    };
+
+    await nextEvent(); // consume the initial `hello`
+
+    // side p1: nextSpeaker starts p1, so this client composes (slowly) immediately.
+    const clientPromise = runRemoteClient({ url, side: 'p1', brain: slowBrain, log: () => {} });
+
+    const thinking = await withTimeout(nextEvent(), 5_000, 'thinking snapshot');
+    expect(thinking.type).toBe('thinking');
+    expect(thinking.nextSpeaker).toBe('p1');
+
+    const turn = await withTimeout(nextEvent(), 5_000, 'turn snapshot for the same turn');
+    expect(turn.type).toBe('turn');
+
+    await reader.cancel().catch(() => {});
+    await closeServer(server);
+    await clientPromise.catch(() => {}); // client errors once the server closes — expected here
   });
 });

@@ -75,6 +75,22 @@ describe('local brain', () => {
     expect(analyze(await brain.nextMessage(ctx({ turnIndex: 7 }))).kind).toBe('HEAVY');
     expect(analyze(await brain.nextMessage(ctx({ turnIndex: 8 }))).kind).toBe('STRIKE');
   });
+
+  it('HEAVY/STRIKE slots classify correctly even with a long, real topic (not silently CRIT from quoted interpolation)', async () => {
+    const brain = createLocalBrain();
+    const topic = 'LIVE MODE: WHICH MODEL ARGUES BETTER';
+    expect(analyze(await brain.nextMessage(ctx({ turnIndex: 7, topic }))).kind).toBe('HEAVY');
+    expect(analyze(await brain.nextMessage(ctx({ turnIndex: 8, topic }))).kind).toBe('STRIKE');
+  });
+
+  it('PARRY (slot 4) is reachable even though the turn right before it (slot 3, a question) would otherwise trigger the trailing-question override', async () => {
+    const brain = createLocalBrain();
+    const topic = 'TEST TOPIC';
+    const questionLine = await brain.nextMessage(ctx({ turnIndex: 3, topic }));
+    expect(questionLine.trim().endsWith('?')).toBe(true);
+    const reply = await brain.nextMessage(ctx({ turnIndex: 4, topic, lastOpponentText: questionLine }));
+    expect(analyze(reply).kind).toBe('PARRY');
+  });
 });
 
 describe('openrouter brain', () => {
@@ -198,8 +214,8 @@ describe('claude-tui brain', () => {
     expect(createClaudeTuiBrain().kind).toBe('claude-tui');
   });
 
-  it('is created by the shared createBrain() factory when kind is "claude-tui"', () => {
-    const brain = createBrain('claude-tui');
+  it('is created by the shared createBrain() factory when kind is "claude-tui"', async () => {
+    const brain = await createBrain('claude-tui');
     expect(brain.kind).toBe('claude-tui');
     expect(hasDispose(brain)).toBe(true);
   });

@@ -39,14 +39,14 @@ const honestCorrection: Line = () =>
   'Actually, I was wrong about the earlier number — let me reconsider.';
 
 const heavy: Line = (topic) =>
-  `The full case for my side of "${topic}" has to account for cost, correctness, ` +
+  `The full case for my side of ${topic} has to account for cost, correctness, ` +
   'onboarding time, long-term maintenance burden, and the fact that every serious survey ' +
   'of practitioners on this exact question has landed the same way for a decade, which is ' +
   'not a coincidence, it is a signal that the argument on the other side keeps sounding ' +
   'clever in the moment and keeps losing once anyone ships something with it.';
 
 const strike: Line = (topic) =>
-  `Every serious team that has shipped under "${topic}" pressure converges on the ` +
+  `Every serious team that has shipped under ${topic} pressure converges on the ` +
   'same answer once the deadline gets real, and that convergence is the argument.';
 
 // A direct rebuttal the analyzer classifies as UNDERCUT (see its `UNDERCUT`
@@ -87,14 +87,19 @@ export function createLocalBrain(): FighterBrain {
 function pickLine(ctx: BrainContext): string {
   const { topic, turnIndex, lastOpponentText, lastOwnText } = ctx;
 
+  const slot = ROTATION[turnIndex % ROTATION.length];
+
   // React to the opponent's last message: a trailing question is a GRAPPLE — answer
   // it with hard evidence rather than whatever the rotation would otherwise pick,
   // the same way a real debater answers a direct challenge before returning to script.
-  if (lastOpponentText && /\?\s*$/.test(lastOpponentText.trim())) {
+  // Skipped on the PARRY slot: PARRY's own line ("You're right that it's nuanced,
+  // but...") is the whole point of that rotation slot, and the turn right before it
+  // (the `question` slot) always ends in '?', which would otherwise shadow PARRY
+  // every single time it comes up.
+  if (slot !== parry && lastOpponentText && /\?\s*$/.test(lastOpponentText.trim())) {
     return evidence(topic);
   }
 
-  const slot = ROTATION[turnIndex % ROTATION.length];
   if (slot === LOOP_SLOT) {
     // Deterministically exercise the SELF_HIT path: repeat this fighter's own last
     // line verbatim. Falls back to the opener if there is no prior line yet (turn 0

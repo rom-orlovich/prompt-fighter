@@ -139,6 +139,15 @@ export async function runRemoteClient(options: RunRemoteClientOptions): Promise<
         lastOpponentText: client.lastText[other(side)],
         lastOwnText: client.lastText[side]
       };
+      // Fire-and-forget: lets a spectator see "X is thinking" the instant
+      // composing starts, but this is purely informational — never awaited, and
+      // any failure (dropped connection, slow server) is swallowed here so it can
+      // never delay or break the match itself.
+      void fetch(`${url}/thinking`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({ speaker: side })
+      }).catch(() => {});
       const text = await brain.nextMessage(ctx);
       if (connectionLost) break;
       const res = await fetch(`${url}/turn`, {
@@ -182,11 +191,12 @@ export async function runRemoteClient(options: RunRemoteClientOptions): Promise<
 
 /** Client-side view of the match, rebuilt entirely from server snapshots — this is
  * the one place the client tracks anything, and it never resolves combat itself. */
-class ClientState {
+export class ClientState {
   nextSpeaker: Speaker;
   matchOver: boolean;
   winner: Speaker | undefined;
   turnCount: number;
+  private eventCount: number;
   lastText: Record<Speaker, string | undefined> = { p1: undefined, p2: undefined };
 
   constructor(
@@ -196,6 +206,7 @@ class ClientState {
     this.nextSpeaker = initial.nextSpeaker;
     this.matchOver = initial.matchOver;
     this.turnCount = initial.turns.length;
+    this.eventCount = initial.events.length;
     for (const turn of initial.turns) this.lastText[turn.speaker] = turn.text;
     this.winner = findWinner(initial.events);
   }
@@ -212,6 +223,28 @@ class ClientState {
         if (line) log(line);
       }
       log(formatCredibilityLine(snapshot.credibility.p1, snapshot.credibility.p2, snapshot.round, this.names));
+      this.eventCount = snapshot.events.length;
+      const winner = findWinner(snapshot.events);
+      if (winner) this.winner = winner;
+    } else if (snapshot.type === 'hello') {
+      // A late-join / reconnect race: a turn landed on the server between this
+      // client's `/state` fetch and its `/stream` connect. The only snapshot that
+      // ever carries that turn is the SSE stream's first `hello` message — catch
+      // history-merging up to it here or the turn (and its events) are silently
+      // dropped from the client's view forever.
+      if (snapshot.turns.length > this.turnCount) {
+        for (const turn of snapshot.turns.slice(this.turnCount)) {
+          log(formatTurnHeader(turn.speaker, this.names, turn.text));
+          this.lastText[turn.speaker] = turn.text;
+        }
+        for (const event of snapshot.events.slice(this.eventCount)) {
+          const line = formatEvent(event, this.names);
+          if (line) log(line);
+        }
+        log(formatCredibilityLine(snapshot.credibility.p1, snapshot.credibility.p2, snapshot.round, this.names));
+        this.turnCount = snapshot.turns.length;
+        this.eventCount = snapshot.events.length;
+      }
       const winner = findWinner(snapshot.events);
       if (winner) this.winner = winner;
     }

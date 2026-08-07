@@ -5,8 +5,18 @@ import type { CombatEvent, MatchState, Speaker } from '../engine/types';
 
 export type Names = Record<Speaker, string>;
 
+/** Strips C0 control characters (\x00-\x1F) and DEL (\x7F) — including ESC (\x1B), which
+ * is what lets a terminal interpret an ANSI/CSI sequence — from opponent-supplied text
+ * before it is ever interpolated into a string we print to the terminal. This is the
+ * single choke point both the local CLI (fight.ts) and the --connect client (client.ts)
+ * print opponent text through, so sanitizing here covers both call paths. */
+export function sanitizeForTerminal(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\x00-\x1f\x7f]/g, '');
+}
+
 export function formatTurnHeader(speaker: Speaker, names: Names, text: string): string {
-  return `\n${names[speaker]} (${speaker}): "${text}"`;
+  return `${names[speaker]} (${speaker}): "${sanitizeForTerminal(text)}"`;
 }
 
 export function formatEvent(event: CombatEvent, names: Names): string | null {

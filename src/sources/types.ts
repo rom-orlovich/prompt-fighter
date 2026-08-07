@@ -1,12 +1,13 @@
 /**
  * A match source feeds the engine one streamed message at a time.
  *
- * `ReplaySource` (bundled transcripts) and a future `LiveSource` (real models over
- * SSE) implement this identically, so neither the engine nor the renderer can tell
- * which one is driving the fight.
+ * `ReplaySource` (bundled transcripts), `LiveSource` (real models over SSE), and
+ * `SpectateSource` (a read-only mirror of a remote match, via the optional
+ * `onServerSnapshot` hook below) all implement this identically, so neither the
+ * engine nor the renderer can tell which one is driving the fight.
  */
 
-import type { Speaker } from '../engine/types';
+import type { CombatEvent, Speaker } from '../engine/types';
 
 export interface Transcript {
   topic: string;
@@ -22,6 +23,19 @@ export interface StreamHandlers {
   onTurnChunk(speaker: Speaker, textSoFar: string): void;
   /** The message is complete — this is the moment the move lands. */
   onTurnEnd(speaker: Speaker, fullText: string): void;
+  /**
+   * Optional: a spectate-only extension point. Fired with the server's
+   * authoritative round/credibility/matchOver state and this turn's combat
+   * events, so a spectator can mirror the fight without recomputing any of the
+   * engine's own rules. `replay.ts` and `live.ts` never call this — every
+   * existing source's behavior is unchanged.
+   */
+  onServerSnapshot?(snapshot: {
+    credibility: { p1: number; p2: number };
+    round: number;
+    matchOver: boolean;
+    events: CombatEvent[];
+  }): void;
 }
 
 export interface MatchSource {
