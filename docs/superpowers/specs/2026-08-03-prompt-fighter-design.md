@@ -417,18 +417,26 @@ the same place:
   by the before/after git-stash screenshot technique each section describes. Nothing here
   retracts them — they are just not re-checkable on a host without a GPU.
 - **"18/18" is not reproducible on a GPU-less host, and was never the whole suite passing.**
-  The e2e suite has since grown to 24 specs (18 at the time that claim was written), 5 of
+  The e2e suite has since grown to 23 specs (18 at the time that claim was written), 5 of
   which deliberately self-skip when they detect a software rasteriser
   (`swiftshader|llvmpipe|software|none`) rather than assert something weaker — see the roster
-  spec's "Recording the demo needs a real GPU". A real `npx playwright test --workers=2` on a
-  software rasteriser is therefore **19 passed / 5 skipped / 0 failed**, verified repeatedly
-  on 2026-08-07. `--headed` *does* launch here (there is an X server) but changes nothing: the
-  rasteriser is still software, so the same 5 specs still skip. "24/24" would require a real
-  GPU, where those 5 stop skipping and actually run.
-- Unit tests, `tsc --noEmit` and both builds are host-independent and green: **237 vitest tests**
+  spec's "Recording the demo needs a real GPU". A real `npx playwright test` on a software
+  rasteriser is therefore **18 passed / 5 skipped**, measured 2026-08-07. `--headed` *does*
+  launch here (there is an X server) but changes nothing: the rasteriser is still software, so
+  the same 5 specs still skip. "23/23" would require a real GPU, where those 5 stop skipping
+  and actually run.
+- **Those 18 are timing-sensitive under software rasterisation, and the config settings that
+  make them reliable are load-bearing.** Measured the same day: with the pre-2026-08-07 config
+  (uncapped `fullyParallel` workers, `video: 'on'`) this host scored **1 passed / 12 failed**;
+  capping to `workers: 2` and recording video only on failure took the same specs to **16-18
+  passed**, and the specs that did fail passed **3/3** when re-run standalone, with a different
+  spec failing on each full run. That signature is contention, not a defect, which is what the
+  single retry in `playwright.config.ts` covers — a genuinely broken spec still fails both
+  attempts.
+- Unit tests, `tsc --noEmit` and both builds are host-independent and green: **235 vitest tests**
   as of 2026-08-07 (124 was the count when this line was first written, 186 as of
   2026-08-06; the suite has kept growing, including the `claude-tui` brain's marker-protocol
-  and factory-wiring coverage).
+  and factory-wiring coverage, and the spectate source/protocol tests).
 
 ### Open gap — it does not yet feel like a real fighting game (unmet, 2026-08-06)
 

@@ -495,11 +495,12 @@ checking them by eye — a valid video file with the wrong content (a black void
 match, a frozen clock) is exactly the failure this whole spec exists to prevent.
 
 **What a real run reports (measured 2026-08-07).** This self-skip is not unique to
-`demo-recording.test.ts`: **5 of the e2e suite's 24 specs** gate on the same software-rasteriser
-check. So `npx playwright test --workers=2` on a GPU-less host is **19 passed / 5 skipped / 0
-failed** — the honest ceiling there, not a partial failure. `--headed` does not change it: it
-launches fine given any X server, but an `Xvfb`-style display is still software rendering, so
-the same 5 skip. Reaching 24/24 requires an actual GPU. The 2026-08-03 design spec's §5 once
-claimed a flat "18/18 headed, real GPU, `--workers=2` all green"; it now carries the same
-split (updated for the current 24-spec count), so the two docs no longer disagree. Unit tests
-are host-independent: **237 vitest specs** as of 2026-08-07 (186 as of 2026-08-06).
+`demo-recording.test.ts`: **5 of the e2e suite's 23 specs** gate on the same software-rasteriser
+check. So `npx playwright test` on a GPU-less host is **18 passed / 5 skipped** — the honest
+ceiling there, not a partial failure. `--headed` does not change it: it launches fine given any
+X server, but an `Xvfb`-style display is still software rendering, so the same 5 skip. Reaching
+23/23 requires an actual GPU. The 2026-08-03 design spec's §5 once claimed a flat "18/18 headed,
+real GPU, `--workers=2` all green"; it now carries the same split (updated for the current
+23-spec count) plus the contention measurements behind `playwright.config.ts`'s `workers`/
+`retries` settings, so the two docs no longer disagree. Unit tests are host-independent:
+**235 vitest specs** as of 2026-08-07 (186 as of 2026-08-06).

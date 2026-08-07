@@ -83,15 +83,17 @@ recorded transcript for live models means implementing one interface — `MatchS
 and changing nothing else.
 
 ```bash
-npm test        # 237 tests over the analyzer, combat resolver, match state machine,
+npm test        # 235 tests over the analyzer, combat resolver, match state machine,
                 # brains, roster data and the live-mode server
 npm run build
 ```
 
 There is also an end-to-end suite (`npm run test:e2e`) that drives the real game in a
-browser. Five of its twenty-four specs need a real GPU and deliberately skip themselves under
+browser. Five of its twenty-three specs need a real GPU and deliberately skip themselves under
 a software rasteriser rather than assert something weaker, so a run on a GPU-less machine
-reports 19 passed / 5 skipped.
+reports 18 passed / 5 skipped. Those 18 are timing-sensitive against a software rasteriser,
+which is why `playwright.config.ts` caps workers and allows one retry — see the comment
+there for the measurements behind those two settings.
 
 Every sound is synthesized at runtime, and the arena, HUD and effects are all Three.js
 primitives and DOM — no audio files, no particle library, no post-processing stack. The
