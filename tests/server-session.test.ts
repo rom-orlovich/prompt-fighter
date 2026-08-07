@@ -48,4 +48,20 @@ describe('MatchSession', () => {
     expect(turn.turns).toEqual([{ speaker: 'p1', text: 'A third jab.' }]);
     expect(turn.events).toEqual(events);
   });
+
+  it('thinkingSnapshot() names the composing speaker without mutating session state', () => {
+    const session = new MatchSession();
+    const snapshot = session.thinkingSnapshot('p1');
+    expect(snapshot).toMatchObject({
+      type: 'thinking',
+      nextSpeaker: 'p1',
+      matchOver: false,
+      turns: [],
+      events: []
+    });
+    // Purely informational — the session's own bookkeeping is untouched.
+    expect(session.nextSpeaker).toBe('p1');
+    expect(session.matchOver).toBe(false);
+    expect(session.turns).toEqual([]);
+  });
 });

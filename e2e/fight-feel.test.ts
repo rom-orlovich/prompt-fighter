@@ -53,7 +53,7 @@ async function startMatch(page: Page, query: string, cardIndex = 0): Promise<voi
   const stageCards = page.locator('.stage-card');
   await expect(stageCards.nth(cardIndex)).toBeVisible();
   await stageCards.nth(cardIndex).click();
-  await page.waitForFunction(() => (window as any).__pf.selection !== null);
+  await page.waitForFunction(() => (window as any).__pf.selection !== null, null, { polling: 100 });
 }
 
 /** Presses GUARD (key 4) for a while, so the run also exercises blocked hits. */
@@ -118,7 +118,8 @@ test.describe('fight feel', () => {
     await guardForAWhile(page, 3000);
 
     await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
-      timeout: 120000
+      timeout: 120000,
+      polling: 100
     });
     // Let the final impact's measurement window close before reading it back.
     await page.waitForTimeout(1800);
@@ -278,7 +279,10 @@ test.describe('fight feel', () => {
 
     await startMatch(page, FIGHT);
 
-    await page.waitForFunction(() => (window as any).__pf.koAt !== null, null, { timeout: 60000 });
+    await page.waitForFunction(() => (window as any).__pf.koAt !== null, null, {
+      timeout: 60000,
+      polling: 100
+    });
     const loser = await page.evaluate(() => {
       const ko = (window as any).__pf.events.filter((e: any) => e.type === 'ko').pop();
       return ko.loser as 'p1' | 'p2';
@@ -313,7 +317,8 @@ test.describe('fight feel', () => {
 
     await startMatch(page, FIGHT);
     await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
-      timeout: 120000
+      timeout: 120000,
+      polling: 100
     });
 
     const winner = await page.evaluate(() => {
@@ -402,7 +407,8 @@ test.describe('fight feel', () => {
     await startMatch(page, '/?fast=1&hold=1&draw=1');
 
     await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
-      timeout: 120000
+      timeout: 120000,
+      polling: 100
     });
 
     const winner = await page.evaluate(() => {
@@ -480,7 +486,8 @@ test.describe('fight feel', () => {
 
       await startMatch(page, FIGHT, cardIndex);
       await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
-        timeout: 120000
+        timeout: 120000,
+        polling: 100
       });
 
       const combos: { side: string; count: number }[] = await page.evaluate(
@@ -570,7 +577,8 @@ test.describe('fight feel', () => {
     expect(shotHigh, 'captured a streak-4-or-higher blow screenshot').not.toBeNull();
 
     await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
-      timeout: 120000
+      timeout: 120000,
+      polling: 100
     });
     // Let the final impact's measurement window close before reading it back.
     await page.waitForTimeout(1800);
@@ -669,7 +677,8 @@ test.describe('fight feel', () => {
 
     await startMatch(page, FIGHT, 0);
     await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
-      timeout: 120000
+      timeout: 120000,
+      polling: 100
     });
     // Let the final impact's measurement window close before reading it back.
     await page.waitForTimeout(1800);
@@ -958,7 +967,7 @@ test.describe('fight feel', () => {
         return rigs?.p1.visible === true && rigs?.p2.visible === true;
       },
       null,
-      { timeout: 10000 }
+      { timeout: 10000, polling: 100 }
     );
 
     // (a) MEASURED, the core assertion: `bindPoseFlashSeen` latches inside the
@@ -979,7 +988,10 @@ test.describe('fight feel', () => {
     // `ROUNDS_TO_WIN` is 2, no match can end before round 2 opens (a single
     // round can only ever award one side ONE round win), so this is never a
     // weak check that happened to skip the round-open case.
-    await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, { timeout: 120000 });
+    await page.waitForFunction(() => (window as any).__pf.matchEnded === true, null, {
+      timeout: 120000,
+      polling: 100
+    });
 
     const finalRound = await page.evaluate(() => {
       const ends = (window as any).__pf.events.filter((e: any) => e.type === 'roundEnd');

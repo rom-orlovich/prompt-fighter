@@ -114,15 +114,17 @@ makes the mechanics testable without a browser and without calling a model.
 ```
 src/
   engine/          # zero Three.js, zero DOM imports
-    types.ts       # Turn · MoveIntent · CombatEvent · FighterState · MatchState
+    types.ts       # Speaker · MoveIntent · CombatEvent · FighterState · MatchState
     analyzer.ts    # analyze(text, ctx) -> MoveIntent          [pure]
     combat.ts      # resolve(intent, action, state) -> CombatEvent[]  [pure]
     match.ts       # FightEngine — rounds, timers, KO, event emission
   sources/
-    types.ts       # MatchSource: start() · onTurnStart · onTurnChunk · onTurnEnd
+    types.ts       # MatchSource: nextTurn(handlers) · reset() · stop()
+                   # (handlers: StreamHandlers — onTurnStart/onTurnChunk/onTurnEnd)
     replay.ts      # bundled transcript, simulated streaming — no key required
     live.ts        # two FighterBrains driving turns through the same MatchSource seam
-  brains/          # FighterBrain: local.ts (deterministic, no key) · openrouter.ts (real models)
+  brains/          # FighterBrain: local.ts (deterministic, no key) · openrouter.ts (real models) ·
+                   # claude-tui.ts (drives a live interactive `claude` TUI session, no key)
   render/          # dumb consumer of CombatEvent
     scene.ts       # Three.js scene, camera, arena, lights
     fighter.ts     # GLTFLoader-loaded CC0 character rig + AnimationMixer pose clips
@@ -131,7 +133,7 @@ src/
   cli/             # `npm run fight` — headless local match, or --serve / --connect
   main.ts          # wiring only
 server/            # live mode's authoritative match (node:http, SSE + POST /turn).
-                   # Node + OpenRouter for real models; the local brain needs neither.
+                   # Node + OpenRouter/claude-tui for real models; the local brain needs neither.
 transcripts/       # bundled demo fights (JSON)
 ```
 
@@ -313,7 +315,7 @@ for fighter models; no proprietary or attribution-required assets. This keeps th
 free of any licensing question while allowing real character models instead of a fully
 procedural rig.
 
-Game feel is carried by: 80ms hitstop on impact (260ms on a super), screen shake, camera
+Game feel is carried by: 90ms hitstop on impact (300ms on a super), screen shake, camera
 zoom-punch, spark bursts, an additive trail streaked along the striking fist, per-super
 themed particle-and-ring effects, floating damage numbers, Tekken-style angled health bars
 with a white chip-damage bar that lags behind, combo counter with a scale pop, and announcer
@@ -415,16 +417,18 @@ the same place:
   by the before/after git-stash screenshot technique each section describes. Nothing here
   retracts them — they are just not re-checkable on a host without a GPU.
 - **"18/18" is not reproducible on a GPU-less host, and was never the whole suite passing.**
-  The e2e suite is 18 specs, 5 of which deliberately self-skip when they detect a software
-  rasteriser (`swiftshader|llvmpipe|software|none`) rather than assert something weaker — see
-  the roster spec's "Recording the demo needs a real GPU". A real `npx playwright test
-  --workers=2` on a software rasteriser is therefore **13 passed / 5 skipped / 0 failed**,
-  verified repeatedly on 2026-08-06. `--headed` *does* launch here (there is an X server) but
-  changes nothing: the rasteriser is still software, so the same 5 specs still skip. "18/18"
-  would require a real GPU, where those 5 stop skipping and actually run.
-- Unit tests, `tsc --noEmit` and both builds are host-independent and green: **186 vitest tests**
-  as of 2026-08-06 (124 was the count when this line was first written; the suite has grown
-  since, including this date's PARRY/UNDERCUT/connect-auth additions).
+  The e2e suite has since grown to 24 specs (18 at the time that claim was written), 5 of
+  which deliberately self-skip when they detect a software rasteriser
+  (`swiftshader|llvmpipe|software|none`) rather than assert something weaker — see the roster
+  spec's "Recording the demo needs a real GPU". A real `npx playwright test --workers=2` on a
+  software rasteriser is therefore **19 passed / 5 skipped / 0 failed**, verified repeatedly
+  on 2026-08-07. `--headed` *does* launch here (there is an X server) but changes nothing: the
+  rasteriser is still software, so the same 5 specs still skip. "24/24" would require a real
+  GPU, where those 5 stop skipping and actually run.
+- Unit tests, `tsc --noEmit` and both builds are host-independent and green: **237 vitest tests**
+  as of 2026-08-07 (124 was the count when this line was first written, 186 as of
+  2026-08-06; the suite has kept growing, including the `claude-tui` brain's marker-protocol
+  and factory-wiring coverage).
 
 ### Open gap — it does not yet feel like a real fighting game (unmet, 2026-08-06)
 
@@ -465,7 +469,11 @@ the game, not by unit tests.
 
 Public, MIT licensed, English code and docs. Vite + TypeScript + Three.js. GitHub Actions
 deploys to Pages so the demo is playable from a link with no install. `.env.example` only —
-no keys committed, and live mode is opt-in.
+no keys committed. Live mode is **on by default for the CLI**: `npm run fight` always
+drives two `FighterBrain`s through `sources/live.ts` (the local brain unless `--brain
+openrouter` or `--brain claude-tui` is passed) — there is no replay/demo path in the CLI to
+opt out of. The **browser** is the opposite: it defaults to the bundled replay transcript,
+and live mode there is opt-in, behind the character-select screen's **LIVE MODE** button.
 
 ## 8. Scope
 

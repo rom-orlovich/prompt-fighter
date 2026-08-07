@@ -1,7 +1,7 @@
 # Prompt Fighter — Roster, Abilities, Select Screen & Real Character Models
 
 **Date:** 2026-08-04
-**Status:** Approved, foundation shipped, character-asset integration in progress
+**Status:** Approved, foundation shipped, character-asset integration shipped and tested (G17-G23 merged)
 
 > The roster stops being four palette swaps and starts being four fighters.
 
@@ -397,11 +397,11 @@ The result under `public/assets/characters/`:
 
 | Asset | Size | Note |
 |---|---|---|
-| `Male.glb` | 1.19MB | body, no clips |
-| `Female.glb` | 1.42MB | body, no clips |
-| `Hair_SimpleParted / Beard / Buzzed / Long` | 0.38MB total | one per fighter |
+| `Male.glb` | 1.26MB | body, no clips |
+| `Female.glb` | 1.48MB | body, no clips |
+| `Hair_SimpleParted / Beard / Buzzed / Long` | 0.37MB total | one per fighter |
 | `Anims.glb` | 15.7MB → 2.89MB | UAL1 (10 clips, incl. `Jump_Start` — G20a) + UAL2 (4 clips) trimmed and merged into 15 clips, shared by every body |
-| **Total** | **5.88MB** | budget 6MB (unchanged — `Jump_Start` still fit) |
+| **Total** | **6.00MB** | budget 6MB — `6 * 1024 * 1024` bytes (6.29MB decimal); still fits, matching the ~6.00MB decimal (~5.72MiB) measurement in "Body surface detail (G15)" above |
 
 This keeps the "clone stays small" property of the original procedural design intact even
 though the geometry is no longer procedural.
@@ -494,12 +494,12 @@ The demo under `demo/` is produced this way, then verified by extracting frames 
 checking them by eye — a valid video file with the wrong content (a black void, a mirror
 match, a frozen clock) is exactly the failure this whole spec exists to prevent.
 
-**What a real run reports (measured 2026-08-06).** This self-skip is not unique to
-`demo-recording.test.ts`: **5 of the e2e suite's 18 specs** gate on the same software-rasteriser
-check. So `npx playwright test --workers=2` on a GPU-less host is **13 passed / 5 skipped / 0
+**What a real run reports (measured 2026-08-07).** This self-skip is not unique to
+`demo-recording.test.ts`: **5 of the e2e suite's 24 specs** gate on the same software-rasteriser
+check. So `npx playwright test --workers=2` on a GPU-less host is **19 passed / 5 skipped / 0
 failed** — the honest ceiling there, not a partial failure. `--headed` does not change it: it
 launches fine given any X server, but an `Xvfb`-style display is still software rendering, so
-the same 5 skip. Reaching 18/18 requires an actual GPU. The 2026-08-03 design spec's §5 once
+the same 5 skip. Reaching 24/24 requires an actual GPU. The 2026-08-03 design spec's §5 once
 claimed a flat "18/18 headed, real GPU, `--workers=2` all green"; it now carries the same
-split, so the two docs no longer disagree. Unit tests are host-independent: **186 vitest
-specs** as of the same date.
+split (updated for the current 24-spec count), so the two docs no longer disagree. Unit tests
+are host-independent: **237 vitest specs** as of 2026-08-07 (186 as of 2026-08-06).

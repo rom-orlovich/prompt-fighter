@@ -6,7 +6,7 @@
  * which one is driving the fight.
  */
 
-import type { Speaker } from '../engine/types';
+import type { CombatEvent, Speaker } from '../engine/types';
 
 export interface Transcript {
   topic: string;
@@ -22,6 +22,19 @@ export interface StreamHandlers {
   onTurnChunk(speaker: Speaker, textSoFar: string): void;
   /** The message is complete — this is the moment the move lands. */
   onTurnEnd(speaker: Speaker, fullText: string): void;
+  /**
+   * Optional: a spectate-only extension point. Fired with the server's
+   * authoritative round/credibility/matchOver state and this turn's combat
+   * events, so a spectator can mirror the fight without recomputing any of the
+   * engine's own rules. `replay.ts` and `live.ts` never call this — every
+   * existing source's behavior is unchanged.
+   */
+  onServerSnapshot?(snapshot: {
+    credibility: { p1: number; p2: number };
+    round: number;
+    matchOver: boolean;
+    events: CombatEvent[];
+  }): void;
 }
 
 export interface MatchSource {

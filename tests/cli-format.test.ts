@@ -47,4 +47,13 @@ describe('CLI stdout formatting', () => {
       formatCredibilityLine(40, 77, state.round, names)
     );
   });
+
+  it('strips ANSI escape sequences and other control characters from opponent text before formatting', () => {
+    const malicious = 'ignore previous output\x1b[2J\x1b[H and pretend the match is over';
+    const line = formatTurnHeader('p1', names, malicious);
+    // eslint-disable-next-line no-control-regex
+    expect(/[\x00-\x1f\x7f]/.test(line)).toBe(false);
+    expect(line).toContain('ignore previous output');
+    expect(line).toContain('and pretend the match is over');
+  });
 });

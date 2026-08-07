@@ -46,13 +46,28 @@ export interface StartServerOptions extends MatchSessionOptions {
   heartbeatMs?: number;
 }
 
+/** A cross-origin spectator page (served from anywhere other than this server's own
+ * origin) cannot read any response — including an error body — without these on
+ * every response, and cannot even send the preflight-required headers/methods
+ * without a browser first completing a bare `OPTIONS` preflight the server must
+ * answer without the match token (see the `OPTIONS` branch below). */
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+};
+
 function sseWrite(res: ServerResponse, payload: unknown): void {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 function respondJSON(res: ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body);
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(json) });
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(json),
+    ...CORS_HEADERS
+  });
   res.end(json);
 }
 
@@ -88,6 +103,14 @@ function presentedToken(req: IncomingMessage, url: URL): string | null {
 }
 
 export function startServer(options: StartServerOptions = {}): Server {
+  // An explicit empty string is distinct from `undefined` (which auto-generates a
+  // token below): it means the caller passed `token: ''` on purpose or by mistake,
+  // and either way `presentedToken` can never equal `''` (its every return path is
+  // `null` or a non-empty string), so the server would start successfully and then
+  // 401 every request forever. Fail loudly here instead, before any listener binds.
+  if (options.token === '') {
+    throw new Error('startServer: options.token must not be an empty string — omit it to auto-generate one');
+  }
   const session = new MatchSession(options);
   // Generated when the caller didn't pin one, so there is no code path that
   // starts an unauthenticated server.
@@ -104,6 +127,16 @@ export function startServer(options: StartServerOptions = {}): Server {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
 
+    // A browser preflight never carries the app token (it can't — the browser
+    // sends it with no custom headers at all), so gating it behind the token check
+    // below would break every cross-origin request that needs one. This is the
+    // only branch that runs before the token gate.
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, CORS_HEADERS);
+      res.end();
+      return;
+    }
+
     // One gate in front of every route, before any of them can read match state
     // or submit a turn. `/state` is behind it too: it returns the full transcript
     // and event history, so leaving it open would hand an unexpected caller the
@@ -117,7 +150,8 @@ export function startServer(options: StartServerOptions = {}): Server {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        Connection: 'keep-alive'
+        Connection: 'keep-alive',
+        ...CORS_HEADERS
       });
       // Full history replay so a client that connects late — or reconnects after a
       // mid-match drop — catches up from `hello` alone, no separate backfill call.
@@ -172,6 +206,22 @@ export function startServer(options: StartServerOptions = {}): Server {
           } catch (err) {
             respondJSON(res, 409, { error: (err as Error).message });
           }
+        })
+        .catch((err) => respondJSON(res, 400, { error: (err as Error).message }));
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/thinking') {
+      readJSONBody(req)
+        .then((body) => {
+          const { speaker } = (body ?? {}) as { speaker?: unknown };
+          if (speaker !== 'p1' && speaker !== 'p2') {
+            return respondJSON(res, 400, { error: 'speaker must be "p1" or "p2"' });
+          }
+          // Purely informational — never touches `MatchSession`'s turn state, so
+          // there is nothing here that can race or corrupt `/turn`'s bookkeeping.
+          broadcast(session.thinkingSnapshot(speaker));
+          respondJSON(res, 200, { ok: true });
         })
         .catch((err) => respondJSON(res, 400, { error: (err as Error).message }));
       return;
