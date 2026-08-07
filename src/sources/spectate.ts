@@ -45,15 +45,13 @@ export class SpectateReducer {
   private openFor: Speaker | null = null;
 
   apply(snapshot: SessionSnapshot, handlers: StreamHandlers): boolean {
-    const type = snapshot.type as string;
-
-    if (type === 'thinking') {
+    if (snapshot.type === 'thinking') {
       handlers.onTurnStart(snapshot.nextSpeaker);
       this.openFor = snapshot.nextSpeaker;
       return false;
     }
 
-    if (type !== 'turn') {
+    if (snapshot.type !== 'turn') {
       // 'hello' (or anything else unrecognized): nothing to resolve.
       return false;
     }

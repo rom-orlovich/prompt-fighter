@@ -1,9 +1,10 @@
 /**
  * A match source feeds the engine one streamed message at a time.
  *
- * `ReplaySource` (bundled transcripts) and a future `LiveSource` (real models over
- * SSE) implement this identically, so neither the engine nor the renderer can tell
- * which one is driving the fight.
+ * `ReplaySource` (bundled transcripts), `LiveSource` (real models over SSE), and
+ * `SpectateSource` (a read-only mirror of a remote match, via the optional
+ * `onServerSnapshot` hook below) all implement this identically, so neither the
+ * engine nor the renderer can tell which one is driving the fight.
  */
 
 import type { CombatEvent, Speaker } from '../engine/types';
