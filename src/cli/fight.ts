@@ -17,6 +17,8 @@ import { parseArgs } from 'node:util';
 import { FightEngine } from '../engine/match';
 import type { Speaker } from '../engine/types';
 import { createBrain, type BrainKind } from '../brains/index';
+import { hasDispose } from '../brains/claude-tui';
+import type { FighterBrain } from '../brains/types';
 import { createLiveSource } from '../sources/live';
 import { runLiveMatch } from './runner';
 import { formatCredibility, formatEvent, formatTurnHeader, type Names } from './format';
@@ -46,11 +48,51 @@ const { values } = parseArgs({
 
 function asBrainKind(value: string | undefined, fallback: string): BrainKind {
   const kind = value ?? fallback;
-  if (kind !== 'local' && kind !== 'openrouter') {
-    throw new Error(`unknown --brain "${kind}" (expected "local" or "openrouter")`);
+  if (kind !== 'local' && kind !== 'openrouter' && kind !== 'claude-tui') {
+    throw new Error(`unknown --brain "${kind}" (expected "local", "openrouter", or "claude-tui")`);
   }
   return kind;
 }
+
+/** Closes any brain's tmux window (currently only `claude-tui`) once a match is over,
+ * win or lose — `local`/`openrouter` brains have nothing to clean up and are skipped
+ * via the `hasDispose` duck-typed guard. Never throws: a cleanup failure is logged but
+ * must not mask the match's own outcome/error. */
+async function disposeBrains(brains: FighterBrain[]): Promise<void> {
+  for (const brain of brains) {
+    if (!hasDispose(brain)) continue;
+    try {
+      await brain.dispose();
+    } catch (err) {
+      console.error(`warning: failed to dispose brain "${brain.kind}": ${(err as Error).message}`);
+    }
+  }
+}
+
+/** Brains created by whichever mode is currently running, so a SIGINT/SIGTERM handler
+ * (registered once, below) can dispose them even if the process is killed mid-match —
+ * e.g. an external supervisor's timeout fallback (`kill $PID`) rather than the normal
+ * finally-block path in `runLocalMode`/`runConnectMode`. Node's default behavior for an
+ * unhandled SIGTERM is to terminate immediately with NO pending `finally` blocks run at
+ * all, which would otherwise leave a `claude-tui` brain's tmux window orphaned forever
+ * whenever the process is killed rather than left to exit on its own. */
+const activeBrains: FighterBrain[] = [];
+let shuttingDown = false;
+
+async function shutdownOnSignal(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.error(`\nreceived ${signal} — cleaning up before exit`);
+  await disposeBrains(activeBrains);
+  process.exit(signal === 'SIGINT' ? 130 : 143);
+}
+
+process.on('SIGINT', () => {
+  void shutdownOnSignal('SIGINT');
+});
+process.on('SIGTERM', () => {
+  void shutdownOnSignal('SIGTERM');
+});
 
 async function main(): Promise<void> {
   if (values.connect) {
@@ -67,44 +109,49 @@ async function runLocalMode(): Promise<void> {
   const names: Names = { p1: values.p1!, p2: values.p2! };
   const p1Brain = createBrain(asBrainKind(values['p1-brain'], values.brain!));
   const p2Brain = createBrain(asBrainKind(values['p2-brain'], values.brain!));
+  activeBrains.push(p1Brain, p2Brain);
 
-  const engine = new FightEngine('p1', names.p1, names.p2);
-  const source = createLiveSource(values.topic!, names, { p1: p1Brain, p2: p2Brain });
+  try {
+    const engine = new FightEngine('p1', names.p1, names.p2);
+    const source = createLiveSource(values.topic!, names, { p1: p1Brain, p2: p2Brain });
 
-  console.log('='.repeat(64));
-  console.log('PROMPT FIGHTER — LIVE MODE (local CLI)');
-  console.log(`${names.p1} vs ${names.p2} — "${values.topic}"`);
-  console.log(`brains: p1=${p1Brain.kind}  p2=${p2Brain.kind}`);
-  console.log('='.repeat(64));
-  console.log(`\n--- ROUND ${engine.state.round} — FIGHT! ---`);
+    console.log('='.repeat(64));
+    console.log('PROMPT FIGHTER — LIVE MODE (local CLI)');
+    console.log(`${names.p1} vs ${names.p2} — "${values.topic}"`);
+    console.log(`brains: p1=${p1Brain.kind}  p2=${p2Brain.kind}`);
+    console.log('='.repeat(64));
+    console.log(`\n--- ROUND ${engine.state.round} — FIGHT! ---`);
 
-  let winner: Speaker | undefined;
-  engine.on((event) => {
-    const line = formatEvent(event, names);
-    if (line) console.log(line);
-    if (event.type === 'matchEnd') winner = event.winner;
-    if (event.type === 'roundEnd' && !engine.matchOver) {
-      console.log(`\n--- ROUND ${engine.state.round} — FIGHT! ---`);
+    let winner: Speaker | undefined;
+    engine.on((event) => {
+      const line = formatEvent(event, names);
+      if (line) console.log(line);
+      if (event.type === 'matchEnd') winner = event.winner;
+      if (event.type === 'roundEnd' && !engine.matchOver) {
+        console.log(`\n--- ROUND ${engine.state.round} — FIGHT! ---`);
+      }
+    });
+
+    await runLiveMatch(engine, source, {
+      maxTurns: values['max-turns'] ? Number(values['max-turns']) : undefined,
+      onTurnStart: (speaker, text) => console.log(formatTurnHeader(speaker, names, text)),
+      onTurnResolved: () => console.log(formatCredibility(engine.state, names))
+    });
+
+    console.log('\n' + '='.repeat(64));
+    if (winner) {
+      console.log(
+        `FINAL RESULT: ${names[winner]} wins the match ` +
+          `(${engine.state.p1.roundsWon}-${engine.state.p2.roundsWon} rounds).`
+      );
+    } else {
+      console.log('FINAL RESULT: no decisive winner within the turn budget (bounded run terminated).');
     }
-  });
-
-  await runLiveMatch(engine, source, {
-    maxTurns: values['max-turns'] ? Number(values['max-turns']) : undefined,
-    onTurnStart: (speaker, text) => console.log(formatTurnHeader(speaker, names, text)),
-    onTurnResolved: () => console.log(formatCredibility(engine.state, names))
-  });
-
-  console.log('\n' + '='.repeat(64));
-  if (winner) {
-    console.log(
-      `FINAL RESULT: ${names[winner]} wins the match ` +
-        `(${engine.state.p1.roundsWon}-${engine.state.p2.roundsWon} rounds).`
-    );
-  } else {
-    console.log('FINAL RESULT: no decisive winner within the turn budget (bounded run terminated).');
+    console.log('='.repeat(64));
+    process.exitCode = 0;
+  } finally {
+    await disposeBrains(activeBrains);
   }
-  console.log('='.repeat(64));
-  process.exitCode = 0;
 }
 
 /** Deliverable 2, server half: holds the one authoritative `FightEngine` and lets
@@ -147,9 +194,14 @@ async function runConnectMode(): Promise<void> {
     throw new Error('--connect requires --side p1 or --side p2');
   }
   const brain = createBrain(asBrainKind(values.brain, 'local'));
+  activeBrains.push(brain);
   console.log(`connecting to ${values.connect} as ${side} (brain: ${brain.kind})`);
-  await runRemoteClient({ url: values.connect!, side, brain, token: values.token });
-  process.exitCode = 0;
+  try {
+    await runRemoteClient({ url: values.connect!, side, brain, token: values.token });
+    process.exitCode = 0;
+  } finally {
+    await disposeBrains(activeBrains);
+  }
 }
 
 main().catch((err) => {
