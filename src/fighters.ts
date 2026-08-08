@@ -44,6 +44,38 @@ export const ROSTER: Record<string, FighterProfile> = {
     tagline: 'fast and shallow',
     superName: 'FAST INFERENCE',
     visual: visualFor('LOCAL 7B')
+  },
+  IRON_FIST: {
+    name: 'IRON_FIST',
+    color: 0x8c8c9a,
+    accent: 0xd4d4dc,
+    tagline: 'unbreakable and slow to anger',
+    superName: 'ADAMANTINE REBUTTAL',
+    visual: visualFor('IRON_FIST')
+  },
+  VIPER: {
+    name: 'VIPER',
+    color: 0x76b900,
+    accent: 0xd4ff6b,
+    tagline: 'strikes once, strikes true',
+    superName: 'VENOM INJECTION',
+    visual: visualFor('VIPER')
+  },
+  WARDEN: {
+    name: 'WARDEN',
+    color: 0x2c3e91,
+    accent: 0x8fa8ff,
+    tagline: 'holds the line no matter what',
+    superName: 'IMMOVABLE VERDICT',
+    visual: visualFor('WARDEN')
+  },
+  BLAZE: {
+    name: 'BLAZE',
+    color: 0xff4500,
+    accent: 0xffb347,
+    tagline: 'burns through every argument',
+    superName: 'SCORCHED EARTH',
+    visual: visualFor('BLAZE')
   }
 };
 

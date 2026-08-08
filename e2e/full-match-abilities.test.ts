@@ -32,14 +32,23 @@ test.describe('full match with abilities', () => {
 
     // The debug bridge and the static roster are wired before any match starts.
     const rosterKeys = await page.evaluate(() => Object.keys((window as any).__pf.roster));
-    expect(rosterKeys.sort()).toEqual(['CLAUDE', 'CODEX', 'GEMINI', 'LOCAL 7B']);
+    expect(rosterKeys.sort()).toEqual([
+      'BLAZE',
+      'CLAUDE',
+      'CODEX',
+      'GEMINI',
+      'IRON_FIST',
+      'LOCAL 7B',
+      'VIPER',
+      'WARDEN'
+    ]);
     expect(await page.evaluate(() => (window as any).__pf.matchEnded)).toBe(false);
     expect(await page.evaluate(() => (window as any).__pf.selection)).toBeNull();
 
     // Pick the CODEX card as the player's fighter — a deliberate override, not
     // the microservices transcript's own default p1 (CLAUDE).
     const cards = page.locator('.fighter-card');
-    await expect(cards).toHaveCount(4);
+    await expect(cards).toHaveCount(8);
     const codex = page.locator('.fighter-card[data-fighter="CODEX"]');
     await expect(codex).toHaveCount(1);
     await codex.click();

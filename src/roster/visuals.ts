@@ -98,6 +98,66 @@ export const FIGHTER_VISUALS: Record<string, FighterVisual> = {
     limbThickness: 0.15,
     footSize: [0.5, 0.34],
     screenSize: [520, 320]
+  },
+  IRON_FIST: {
+    name: 'IRON_FIST',
+    silhouette: 'plated bulwark, boxy and reinforced',
+    headShape: 'box',
+    scale: 1.05,
+    color: 0x8c8c9a,
+    accent: 0xd4d4dc,
+    trim: 0x4a4a52,
+    torso: [0.95, 1.28, 1.2],
+    shoulderWidth: 0.82,
+    hipWidth: 0.86,
+    limbThickness: 0.25,
+    footSize: [0.78, 0.52],
+    screenSize: [688, 392]
+  },
+  VIPER: {
+    name: 'VIPER',
+    silhouette: 'low coiled stance, lean and venomous',
+    headShape: 'slabs',
+    scale: 0.93,
+    color: 0x76b900,
+    accent: 0xd4ff6b,
+    trim: 0x3d5c00,
+    torso: [0.66, 1.15, 0.85],
+    shoulderWidth: 0.58,
+    hipWidth: 0.5,
+    limbThickness: 0.17,
+    footSize: [0.56, 0.38],
+    screenSize: [560, 336]
+  },
+  WARDEN: {
+    name: 'WARDEN',
+    silhouette: 'braced sentinel, wide and unmoving',
+    headShape: 'crest',
+    scale: 1.2,
+    color: 0x2c3e91,
+    accent: 0x8fa8ff,
+    trim: 0x161b3d,
+    torso: [1.0, 1.35, 1.1],
+    shoulderWidth: 0.88,
+    hipWidth: 0.92,
+    limbThickness: 0.26,
+    footSize: [0.8, 0.54],
+    screenSize: [720, 432]
+  },
+  BLAZE: {
+    name: 'BLAZE',
+    silhouette: 'wreathed silhouette, restless and hot',
+    headShape: 'sphere',
+    scale: 1.02,
+    color: 0xff4500,
+    accent: 0xffb347,
+    trim: 0x8a1f00,
+    torso: [0.74, 1.18, 0.9],
+    shoulderWidth: 0.66,
+    hipWidth: 0.6,
+    limbThickness: 0.21,
+    footSize: [0.62, 0.4],
+    screenSize: [608, 352]
   }
 };
 

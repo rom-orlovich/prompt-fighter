@@ -29,7 +29,27 @@ import { frameFighter } from '../src/render/select';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = join(__dirname, '..', 'public', 'assets', 'characters');
-const NAMES = ['CLAUDE', 'CODEX', 'GEMINI', 'LOCAL 7B'] as const;
+const NAMES = [
+  'CLAUDE',
+  'CODEX',
+  'GEMINI',
+  'LOCAL 7B',
+  'IRON_FIST',
+  'VIPER',
+  'WARDEN',
+  'BLAZE'
+] as const;
+
+/**
+ * The original four only — reused inside the G16 describe block below, which
+ * actually loads real GLTF assets through `GLTFLoader` + `AnimationMixer` and
+ * samples the idle clip 8x per fighter. That is expensive by design (it is
+ * the only place in this file exercising the real rig, not the raw glTF
+ * bytes), so G16 stays scoped to the original roster rather than paying that
+ * cost 2x for the four new fighters, which only recombine the SAME vendored
+ * body/hair assets G16 already exercises via CLAUDE/CODEX/GEMINI/LOCAL 7B.
+ */
+const FILL_NAMES = ['CLAUDE', 'CODEX', 'GEMINI', 'LOCAL 7B'] as const;
 
 const PREVIEW_ASPECT = 220 / 280;
 
@@ -148,7 +168,7 @@ describe('character-select preview framing (G12)', () => {
       const { top, bottom } = measuredWorldBounds(name);
       return top - bottom;
     });
-    expect(new Set(heights).size).toBe(4);
+    expect(new Set(heights).size).toBe(8);
     for (const name of NAMES) {
       expect(measuredWorldBounds(name).top, name).toBeGreaterThan(arenaHeight(CHARACTERS[name]!) - 0.05);
     }
@@ -271,7 +291,7 @@ describe('character-select preview fill (G16)', () => {
       if (!clip) throw new Error('no Sword_Idle clip in Anims.glb');
 
       const minFillByFighter: Record<string, number> = {};
-      for (const name of NAMES) {
+      for (const name of FILL_NAMES) {
         const { body, model, measure } = await buildRig(name);
         const mixer = new THREE.AnimationMixer(body);
         mixer.clipAction(clip).play();
@@ -332,7 +352,7 @@ describe('character-select preview fill (G16)', () => {
       const clip = animations.find((c) => c.name === 'Sword_Idle');
       if (!clip) throw new Error('no Sword_Idle clip in Anims.glb');
 
-      for (const name of NAMES) {
+      for (const name of FILL_NAMES) {
         const { body, model, measure } = await buildRig(name);
 
         // No mixer, no `.play()` — this is the skeleton exactly as the loader

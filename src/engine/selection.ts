@@ -6,8 +6,17 @@
  * the same input must always produce the same output.
  */
 
-/** The fixed four-fighter roster. */
-export const FIGHTER_IDS = ['CLAUDE', 'CODEX', 'GEMINI', 'LOCAL 7B'] as const;
+/** The fixed eight-fighter roster (original four first, then the expansion four). */
+export const FIGHTER_IDS = [
+  'CLAUDE',
+  'CODEX',
+  'GEMINI',
+  'LOCAL 7B',
+  'IRON_FIST',
+  'VIPER',
+  'WARDEN',
+  'BLAZE'
+] as const;
 
 export type FighterId = (typeof FIGHTER_IDS)[number];
 

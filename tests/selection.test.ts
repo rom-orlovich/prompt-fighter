@@ -9,8 +9,20 @@ import {
 } from '../src/engine/selection';
 
 describe('deterministic fighter selection', () => {
-  it('knows the four-fighter roster', () => {
-    expect([...FIGHTER_IDS].sort()).toEqual(['CLAUDE', 'CODEX', 'GEMINI', 'LOCAL 7B']);
+  it('knows the eight-fighter roster', () => {
+    expect([...FIGHTER_IDS].sort()).toEqual(
+      ['CLAUDE', 'CODEX', 'GEMINI', 'LOCAL 7B', 'IRON_FIST', 'VIPER', 'WARDEN', 'BLAZE'].sort()
+    );
+  });
+
+  it('resolves a transcript-named new fighter in any casing', () => {
+    for (const name of ['IRON_FIST', 'VIPER', 'WARDEN', 'BLAZE']) {
+      for (const casing of [name, name.toLowerCase(), `  ${name.toLowerCase()}  `]) {
+        const picked = selectFighter({ modelName: 'some-random-model', transcriptFighter: casing });
+        expect(picked.fighter, `${name} (${casing})`).toBe(name);
+        expect(picked.source, `${name} (${casing})`).toBe('transcript');
+      }
+    }
   });
 
   it('normalises case and surrounding whitespace', () => {

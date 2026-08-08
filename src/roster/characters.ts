@@ -109,6 +109,42 @@ export const CHARACTERS: Record<string, CharacterSpec> = {
     skin: 0xa855f7,
     modelScale: 1.66,
     bulk: 0.9
+  },
+  IRON_FIST: {
+    name: 'IRON_FIST',
+    body: 'Female',
+    hair: 'Hair_SimpleParted',
+    description: 'an armored grappler that shrugs off punishment and closes the distance',
+    skin: 0x8c8c9a,
+    modelScale: 1.95,
+    bulk: 1.05
+  },
+  VIPER: {
+    name: 'VIPER',
+    body: 'Female',
+    hair: 'Hair_Beard',
+    description: 'a venomous counter-striker that waits for one clean opening',
+    skin: 0x76b900,
+    modelScale: 1.72,
+    bulk: 0.93
+  },
+  WARDEN: {
+    name: 'WARDEN',
+    body: 'Female',
+    hair: 'Hair_Buzzed',
+    description: 'a stoic wall of a fighter built to absorb and outlast',
+    skin: 0x2c3e91,
+    modelScale: 2.05,
+    bulk: 1.2
+  },
+  BLAZE: {
+    name: 'BLAZE',
+    body: 'Male',
+    hair: 'Hair_Long',
+    description: 'a relentless pressure fighter that never lets the pace cool',
+    skin: 0xff4500,
+    modelScale: 1.95,
+    bulk: 1.08
   }
 };
 

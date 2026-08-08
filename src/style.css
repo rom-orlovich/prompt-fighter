@@ -584,7 +584,7 @@ body {
 
 .select-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(110px, 150px));
+  grid-template-columns: repeat(4, minmax(96px, 140px));
   gap: 10px;
   justify-content: center;
   margin: 6px 0 4px;

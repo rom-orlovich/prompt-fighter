@@ -12,7 +12,7 @@ import {
 } from '../src/roster/characters';
 import { ROSTER } from '../src/fighters';
 
-const NAMES = ['CLAUDE', 'CODEX', 'GEMINI', 'LOCAL 7B'];
+const NAMES = ['CLAUDE', 'CODEX', 'GEMINI', 'LOCAL 7B', 'IRON_FIST', 'VIPER', 'WARDEN', 'BLAZE'];
 
 describe('character specs', () => {
   it('defines a spec for every roster fighter', () => {
@@ -23,21 +23,31 @@ describe('character specs', () => {
     for (const name of NAMES) {
       expect(characterFor(name).skin, name).toBe(ROSTER[name]!.color);
     }
-    expect(new Set(NAMES.map((n) => characterFor(n).skin)).size).toBe(4);
+    expect(new Set(NAMES.map((n) => characterFor(n).skin)).size).toBe(8);
   });
 
-  it('builds four fighters out of the vendored bodies and hairstyles', () => {
-    // The free asset tier ships two bodies, so identity is the COMBINATION:
-    // body x hairstyle x build x tint. Every hairstyle must be used exactly
-    // once, or two fighters would share a head silhouette.
+  it('builds eight fighters out of the vendored bodies and hairstyles', () => {
+    // The free asset tier ships two bodies and four hairstyles — eight
+    // fighters is exactly two bodies x four hairstyles, so identity is the
+    // COMBINATION: each hairstyle is reused exactly twice (once per body),
+    // never wasted and never overloaded onto three+ fighters.
     for (const name of NAMES) {
       expect(BODIES as readonly string[], name).toContain(characterFor(name).body);
       expect(HAIRSTYLES as readonly string[], name).toContain(characterFor(name).hair);
     }
     const hairs = NAMES.map((n) => characterFor(n).hair);
-    expect(new Set(hairs).size, 'every fighter gets its own hairstyle').toBe(4);
+    const hairCounts = new Map<string, number>();
+    for (const hair of hairs) hairCounts.set(hair, (hairCounts.get(hair) ?? 0) + 1);
+    expect(
+      [...hairCounts.keys()].sort(),
+      'all four hairstyles present'
+    ).toEqual([...HAIRSTYLES].sort());
+    for (const [hair, count] of hairCounts) {
+      expect(count, `${hair} used exactly twice`).toBe(2);
+    }
     // Both bodies are actually used — otherwise the pack's variety is wasted.
-    expect(new Set(NAMES.map((n) => characterFor(n).body)).size).toBeGreaterThan(1);
+    const bodies = NAMES.map((n) => characterFor(n).body);
+    expect(new Set(bodies).size, 'both bodies used').toBe(2);
   });
 
   it('gives every fighter a distinct body+hair combination', () => {
@@ -45,7 +55,7 @@ describe('character specs', () => {
       const c = characterFor(n);
       return `${c.body}/${c.hair}`;
     });
-    expect(new Set(combos).size).toBe(4);
+    expect(new Set(combos).size).toBe(8);
   });
 
   it('resolves the shared clip library to its own asset', () => {
@@ -54,7 +64,7 @@ describe('character specs', () => {
 
   it('separates the fighters by build as well as height', () => {
     const bulks = NAMES.map((n) => characterFor(n).bulk);
-    expect(new Set(bulks).size, 'every fighter has its own build').toBe(4);
+    expect(new Set(bulks).size, 'every fighter has its own build').toBe(8);
     for (const bulk of bulks) {
       // Past roughly this range a stretched skinned humanoid reads as broken
       // rather than as heavyset.
@@ -66,7 +76,7 @@ describe('character specs', () => {
 
   it('gives every fighter a unique, non-empty description', () => {
     const descriptions = NAMES.map((n) => characterFor(n).description);
-    expect(new Set(descriptions).size).toBe(4);
+    expect(new Set(descriptions).size).toBe(8);
     for (const d of descriptions) expect(d.length).toBeGreaterThan(0);
   });
 
@@ -95,7 +105,7 @@ describe('character specs', () => {
     }
     // Distinct silhouettes: the heavyweight must not render the same size as
     // the featherweight.
-    expect(new Set(NAMES.map((n) => arenaHeight(characterFor(n)))).size).toBe(4);
+    expect(new Set(NAMES.map((n) => arenaHeight(characterFor(n)))).size).toBe(8);
     expect(arenaHeight(characterFor('GEMINI'))).toBeGreaterThan(arenaHeight(characterFor('LOCAL 7B')));
   });
 
@@ -111,7 +121,7 @@ describe('character specs', () => {
 
   it('produces a unique signature per fighter', () => {
     const sigs = NAMES.map((n) => characterSignature(characterFor(n)));
-    expect(new Set(sigs).size).toBe(4);
+    expect(new Set(sigs).size).toBe(8);
     for (const sig of sigs) expect(sig.length).toBeGreaterThan(0);
   });
 });
